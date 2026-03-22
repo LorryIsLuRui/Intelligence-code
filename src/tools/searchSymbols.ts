@@ -9,7 +9,7 @@ export const searchSymbolsInput = z.object({
 export function createSearchSymbolsTool(repository: SymbolRepository) {
   return {
     name: "search_symbols",
-    description: "Search symbols by keyword and optional type",
+    description: "Search symbols by keyword and optional type. Use when user wants to find components, utils, or types.",
     inputSchema: searchSymbolsInput.shape,
     handler: async (input: z.infer<typeof searchSymbolsInput>) => {
       const rows = await repository.search(input.query, input.type);

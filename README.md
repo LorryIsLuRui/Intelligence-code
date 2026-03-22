@@ -5,8 +5,9 @@
 - MCP Server（stdio）
 - Tool: `search_symbols`
 - Tool: `get_symbol_detail`
+- Prompt: `reusable-code-advisor`（与 Cursor Skill 同工作流，见 `src/prompts/reusableCodeAdvisorPrompt.ts`）
 - MySQL Repository（可选启用）
-- Skill 占位：`recommendComponent`
+- Cursor Skill：`reusable-code-advisor`（`.cursor/skills/reusable-code-advisor/`，未改动，与 MCP Prompt 并行维护）
 
 ## 1) 安装
 
@@ -72,6 +73,13 @@ npm run dev:mcp
 ```
 
 也可继续用 `"command": "npm"`, `"args": ["run", "dev:mcp"]`，但部分环境下 npm 仍可能产生额外输出；若 tools 不稳定，请改用上面的 `node .../mcp-dev-watch.mjs`。
+
+### MCP Prompt（非 Cursor 客户端）
+
+服务器注册 Prompt **`reusable-code-advisor`**：客户端执行 `prompts/list` 可见；`prompts/get` 时可传可选参数 **`userRequest`**（用户当前需求或关键词），返回的消息正文与 Cursor Skill 工作流一致。  
+文案与 `.cursor/skills/reusable-code-advisor/SKILL.md` 正文需**手动同步**（见 `src/prompts/reusableCodeAdvisorPrompt.ts` 顶部注释）。
+
+在 **MCP Inspector** 中切换到 **Prompts** 面板即可选择并调试。
 
 ## 5) 后续演进建议
 
