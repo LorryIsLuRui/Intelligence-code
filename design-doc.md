@@ -366,6 +366,8 @@ Phase 2（索引）
 	• ts-morph AST
 	• MySQL 建表
 
+👉 工程落地：见仓库 `README.md`「Phase 2：代码索引」；执行 `npm run index`（需 `MYSQL_ENABLED=true`）。
+
 
 
 Phase 3（增强）

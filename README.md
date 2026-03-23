@@ -28,11 +28,46 @@ MYSQL_ENABLED=true
 MYSQL_HOST=127.0.0.1
 MYSQL_PORT=3306
 MYSQL_USER=root
-MYSQL_PASSWORD=your_password
+MYSQL_PASSWORD=devpassword
 MYSQL_DATABASE=code_intelligence
 ```
 
+密码需与下方 Docker / 本机 MySQL 配置一致（`.env.example` 默认 `devpassword` 对应 Compose）。
+
+### 用 Docker 启动 MySQL（推荐本地开发）
+
+1. 安装 [Docker Desktop](https://www.docker.com/products/docker-desktop/)（或 Docker Engine + Compose 插件）。
+2. 在项目根目录执行：
+
+```bash
+npm run docker:up
+# 或：docker compose up -d
+```
+
+3. 首次启动会自动挂载 `sql/schema.sql` 到 `docker-entrypoint-initdb.d`，**创建库表**（仅**空数据卷**时执行一次）。  
+4. 复制 `.env.example` 为 `.env`，设置 `MYSQL_ENABLED=true`，`MYSQL_PASSWORD` 与 `docker-compose.yml` 里 `MYSQL_ROOT_PASSWORD`（默认 `devpassword`）一致。  
+5. 等待容器健康（约数十秒）：
+
+```bash
+docker compose ps
+```
+
+6. 再执行 `npm run index` 或启动 MCP。
+
+常用命令：
+
+| 命令 | 说明 |
+|------|------|
+| `npm run docker:logs` | 查看 MySQL 日志 |
+| `npm run docker:down` | 停止容器（数据卷保留，库仍在） |
+| `docker compose down -v` | **删除卷**（清空库，慎用） |
+
+**端口冲突**：若本机已有服务占用 `3306`，把 `docker-compose.yml` 里 `ports` 改为 `"3307:3306"`，并在 `.env` 设 `MYSQL_PORT=3307`。
+
 ## 3) 初始化数据库（可选）
+
+- **已用上述 Docker 首次启动**：若卷为空，建表已由 `sql/schema.sql` 自动执行，一般无需再跑下面命令。
+- **本机 mysql 客户端 / 手动执行**：
 
 ```bash
 mysql -u root -p code_intelligence < sql/schema.sql
@@ -81,12 +116,41 @@ npm run dev:mcp
 
 在 **MCP Inspector** 中切换到 **Prompts** 面板即可选择并调试。
 
-## 5) 后续演进建议
+## 5) Phase 2：代码索引（ts-morph + fast-glob → MySQL）
 
-- 加入 Indexer（`ts-morph` + `fast-glob`）
+1. **建表 / 迁移**
+   - 新库：执行 `sql/schema.sql`（已含 `(path, name)` 唯一索引，便于重复执行 `npm run index` 时 upsert）。
+   - 旧库若只有早期表结构：执行 `sql/migrations/002_symbols_unique_path_name.sql`（若已有重复 `path+name` 需先清理）。
+
+2. **配置 MySQL**（`.env` 中 `MYSQL_ENABLED=true` 等）。
+
+3. **跑索引**（日志在 stderr，不污染 MCP stdout）：
+
+```bash
+npm run index
+```
+
+可选环境变量（见 `.env.example`）：
+
+| 变量 | 含义 |
+|------|------|
+| `INDEX_ROOT` | 工程根目录，默认当前工作目录 |
+| `INDEX_GLOB` | 逗号分隔 glob，默认 `src/**/*.{ts,tsx}` |
+| `INDEX_IGNORE` | 额外忽略的 glob 片段（逗号分隔） |
+
+**分类规则（首版启发式）**：`interface` / `type` → `type`；`.tsx` 且函数体含 JSX → `component`；路径或导出名含 `selector` → `selector`；其余导出函数 → `util`；`class` → `util`（可后续细化）。
+
+**常见错误 `ECONNREFUSED 127.0.0.1:3306`**：本机没有在该端口监听 MySQL。请先启动数据库服务（例如 macOS Homebrew：`brew services start mysql` / `mariadb`），或把 `.env` 里的 `MYSQL_HOST`、`MYSQL_PORT` 改成你实际使用的实例（含 Docker 映射端口）。索引脚本会先执行 `SELECT 1` 再扫描代码，避免库不可用时仍跑完解析。
+
+## 6) 后续演进建议
+
 - 新增 Tool：`search_by_structure`、`list_dependencies`、`get_usage_stats`
-- Skill 层引入完整推荐流程
-- 增加 Python embedding 服务（语义检索）
+- Ranking / 语义检索（Python embedding）
+- Indexer：更细的 selector 识别、`export default` 命名、类组件等
+
+## 7) VS Code 迁移
+
+迁移步骤见 `docs/vscode-mcp-migration.md`。
 
 
 

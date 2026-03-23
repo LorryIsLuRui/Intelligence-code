@@ -8,12 +8,20 @@
     "dev": "tsx watch --clear-screen=false --exclude node_modules --exclude dist src/index.ts",
     "dev:mcp": "node ./scripts/mcp-dev-watch.mjs",
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "index": "tsx src/cli/index-codebase.ts",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down",
+    "docker:logs": "docker compose logs -f mysql"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.3",
+    "@types/react": "^19.2.14",
     "dotenv": "^16.4.5",
+    "fast-glob": "^3.3.2",
     "mysql2": "^3.11.3",
+    "react": "^19.2.4",
+    "ts-morph": "^25.0.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {

@@ -1,0 +1,33 @@
+# 本地开发用 MySQL 8（数据持久化到命名卷 intelligence-mysql-data）
+# 启动：docker compose up -d
+# 停止：docker compose down（加 -v 可删库卷，慎用）
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: intelligence-mysql
+    restart: unless-stopped
+    ports:
+      # 若本机 3306 已被占用，可改为 "3307:3306" 并在 .env 设 MYSQL_PORT=3307
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-devpassword}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-code_intelligence}
+    volumes:
+      - intelligence-mysql-data:/var/lib/mysql
+      # 仅首次初始化数据目录时执行；已有卷则不会重复执行
+      - ./sql/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    command: >
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+      --default-time-zone=+08:00
+    # $$ 在 Compose 中会变为 $，供容器内 sh 展开 MYSQL_ROOT_PASSWORD
+    healthcheck:
+      test: ["CMD", "sh", "-c", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD"]
+      interval: 5s
+      timeout: 5s
+      retries: 25
+      start_period: 30s
+
+volumes:
+  intelligence-mysql-data:
