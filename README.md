@@ -5,6 +5,8 @@
 - MCP Server（stdio）
 - Tool: `search_symbols`
 - Tool: `get_symbol_detail`
+- Tool: `search_by_structure`
+- Tool: `reindex`
 - Prompt: `reusable-code-advisor`（与 Cursor Skill 同工作流，见 `src/prompts/reusableCodeAdvisorPrompt.ts`）
 - MySQL Repository（可选启用）
 - Cursor Skill：`reusable-code-advisor`（`.cursor/skills/reusable-code-advisor/`，未改动，与 MCP Prompt 并行维护）
@@ -144,9 +146,39 @@ npm run index
 
 ## 6) 后续演进建议
 
-- 新增 Tool：`search_by_structure`、`list_dependencies`、`get_usage_stats`
+- 新增 Tool：`list_dependencies`、`get_usage_stats`
 - Ranking / 语义检索（Python embedding）
 - Indexer：更细的 selector 识别、`export default` 命名、类组件等
+
+## 8) Phase 3（增强）
+
+- `search_symbols` 已支持 `ranked` 参数（默认 `true`），返回 `score` 和 `reason`。
+- 新增 `search_by_structure`，可按 `fields`（匹配 `meta.props/params/properties/hooks`）检索。
+- 两个搜索 tool 的 ranking 已升级：除可读 `reason` 外，还返回结构化 `reasonDetail`（含各维度得分、权重和匹配方式），方便前端/Agent解释。
+
+示例：
+
+```json
+{
+  "fields": ["onChange", "value"],
+  "type": "component",
+  "limit": 10
+}
+```
+
+`reindex` 示例（Inspector / Agent 可直接调用，不用回终端）：
+
+```json
+{
+  "dryRun": false
+}
+```
+
+可选参数：
+- `projectRoot`: 指定索引根目录（默认 MCP 进程当前目录）
+- `globPatterns`: 自定义扫描 glob 列表
+- `ignore`: 额外忽略规则
+- `dryRun`: `true` 时只扫描，不写 MySQL
 
 ## 7) VS Code 迁移
 

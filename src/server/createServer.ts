@@ -3,6 +3,7 @@ import { registerReusableCodeAdvisorPrompt } from "../prompts/reusableCodeAdviso
 import { SymbolRepository } from "../repositories/symbolRepository.js";
 import { createSearchSymbolsTool } from "../tools/searchSymbols.js";
 import { createGetSymbolDetailTool } from "../tools/getSymbolDetail.js";
+import { createSearchByStructureTool } from "../tools/searchByStructure.js";
 
 export function createServer() {
   const server = new McpServer({
@@ -17,6 +18,9 @@ export function createServer() {
 
   const detailTool = createGetSymbolDetailTool(repository);
   server.tool(detailTool.name, detailTool.description, detailTool.inputSchema, detailTool.handler);
+
+  const structureTool = createSearchByStructureTool(repository);
+  server.tool(structureTool.name, structureTool.description, structureTool.inputSchema, structureTool.handler);
 
   registerReusableCodeAdvisorPrompt(server);
 

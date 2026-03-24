@@ -33,6 +33,22 @@ function extractParamNames(fn: FunctionDeclaration | FunctionExpression | ArrowF
 }
 
 /**
+ * 从第一个参数的类型信息提取字段名（例如 `props: DialogProps` -> `title/content/onClose`）。
+ * @returns 若无可解析类型或无法安全推断，则返回空数组。
+ */
+function extractParamTypeFieldNames(fn: FunctionDeclaration | FunctionExpression | ArrowFunction): string[] {
+  const params = fn.getParameters();
+  if (params.length === 0) return [];
+  const first = params[0];
+  const type = first.getType();
+  const properties = type.getProperties();
+  if (!properties.length) return [];
+  const names = properties.map((p) => p.getName());
+  // 防止出现泛型对象原型噪音字段。
+  return names.filter((n) => n !== "__type");
+}
+
+/**
  * 在函数体内收集形如 `useXxx(...)` 的调用名（React Hooks 约定）。
  * @returns 去重、排序后的钩子名列表，写入 `meta.hooks`；无则为空数组。
  */
@@ -67,10 +83,12 @@ export function extractReturnTypeText(
  */
 export function extractFunctionMeta(fn: FunctionDeclaration | FunctionExpression | ArrowFunction): Record<string, unknown> {
   const params = extractParamNames(fn);
+  const paramTypeFields = extractParamTypeFieldNames(fn);
   const hooks = extractHooksFromBody(fn);
   const returnType = extractReturnTypeText(fn);
   return {
     params,
+    ...(paramTypeFields.length ? { paramTypeFields } : {}),
     ...(hooks.length ? { hooks } : {}),
     ...(returnType ? { returnType } : {})
   };

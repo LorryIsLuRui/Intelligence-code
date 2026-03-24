@@ -46,9 +46,13 @@ export interface IndexedSymbolRow {
 function mergeCallableMeta(symbolType: SymbolType, raw: Record<string, unknown> | null): Record<string, unknown> {
   if (!raw) return {};
   const params = raw.params as string[] | undefined;
-  const { params: _p, ...rest } = raw;
+  const paramTypeFields = raw.paramTypeFields as string[] | undefined;
+  const { params: _p, paramTypeFields: _f, ...rest } = raw;
   if (symbolType === "component" && params?.length) {
-    return { ...rest, props: params };
+    const props = [...new Set([...(paramTypeFields ?? []), ...params])].filter(
+      (name) => name.toLowerCase() !== "props"
+    );
+    return { ...rest, props: props.length ? props : params };
   }
   return { ...rest, ...(params?.length ? { params } : {}) };
 }

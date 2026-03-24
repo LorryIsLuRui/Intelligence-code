@@ -4,10 +4,7 @@
  */
 import { resolve } from "node:path";
 import dotenv from "dotenv";
-import { validateEnv } from "../config/env.js";
-import { getMySqlPool } from "../db/mysql.js";
-import { indexProject } from "../indexer/indexProject.js";
-import { upsertSymbols } from "../indexer/persistSymbols.js";
+import { runReindex } from "../services/reindex.js";
 
 dotenv.config();
 
@@ -17,21 +14,6 @@ dotenv.config();
  * 进程退出码：成功 `0`，无 MySQL 或异常 `1`。
  */
 async function main() {
-  validateEnv();
-
-  const pool = getMySqlPool();
-  if (!pool) {
-    console.error(
-      "[index] MYSQL_ENABLED 必须为 true，并配置 MYSQL_HOST / MYSQL_USER / MYSQL_DATABASE 等。详见 .env.example"
-    );
-    process.exit(1);
-  }
-
-  const host = process.env.MYSQL_HOST ?? "127.0.0.1";
-  const port = process.env.MYSQL_PORT ?? "3306";
-  console.error(`[index] connecting MySQL ${host}:${port} ...`);
-  await pool.query("SELECT 1");
-
   const projectRoot = resolve(process.env.INDEX_ROOT ?? process.cwd());
   const globPatterns = process.env.INDEX_GLOB
     ? process.env.INDEX_GLOB.split(",").map((s) => s.trim())
@@ -41,10 +23,8 @@ async function main() {
     : undefined;
 
   console.error(`[index] projectRoot=${projectRoot}`);
-  const rows = await indexProject({ projectRoot, globPatterns, ignore });
-  console.error(`[index] extracted ${rows.length} symbol(s)`);
-
-  await upsertSymbols(pool, rows);
+  const result = await runReindex({ projectRoot, globPatterns, ignore, dryRun: false });
+  console.error(`[index] extracted ${result.extractedCount} symbol(s)`);
   console.error("[index] upserted into MySQL");
 }
 

@@ -10,4 +10,5 @@ export interface CodeSymbol {
   content: string | null;
   meta: Record<string, unknown> | null;
   usageCount: number;
+  createdAt?: string | null;
 }

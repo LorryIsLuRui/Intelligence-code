@@ -12,6 +12,7 @@ interface SymbolRow extends RowDataPacket {
   content: string | null;
   meta: string | null;
   usage_count: number;
+  created_at?: string | null;
 }
 
 const inMemorySymbols: CodeSymbol[] = [
@@ -24,7 +25,8 @@ const inMemorySymbols: CodeSymbol[] = [
     description: "A reusable form input with validation",
     content: null,
     meta: { props: ["value", "onChange", "error"], hooks: ["useForm"] },
-    usageCount: 18
+    usageCount: 18,
+    createdAt: new Date().toISOString()
   },
   {
     id: 2,
@@ -35,7 +37,8 @@ const inMemorySymbols: CodeSymbol[] = [
     description: "Format date to YYYY-MM-DD",
     content: null,
     meta: { params: ["input"], returnType: "string" },
-    usageCount: 40
+    usageCount: 40,
+    createdAt: new Date(Date.now() - 1000 * 60 * 60 * 24 * 30).toISOString()
   }
 ];
 
@@ -49,8 +52,16 @@ function mapRow(row: SymbolRow): CodeSymbol {
     description: row.description,
     content: row.content,
     meta: row.meta ? JSON.parse(row.meta) : null,
-    usageCount: row.usage_count
+    usageCount: row.usage_count,
+    createdAt: row.created_at ?? null
   };
+}
+
+function getMetaArray(meta: Record<string, unknown> | null, key: string): string[] {
+  if (!meta) return [];
+  const value = meta[key];
+  if (!Array.isArray(value)) return [];
+  return value.filter((v): v is string => typeof v === "string");
 }
 
 export class SymbolRepository {
@@ -71,7 +82,7 @@ export class SymbolRepository {
 
     const params: Array<string> = [`%${query}%`];
     let sql = `
-      SELECT id, name, type, category, path, description, content, CAST(meta AS CHAR) AS meta, usage_count
+      SELECT id, name, type, category, path, description, content, CAST(meta AS CHAR) AS meta, usage_count, created_at
       FROM symbols
       WHERE (name LIKE ? OR description LIKE ?)
     `;
@@ -95,7 +106,7 @@ export class SymbolRepository {
 
     const [rows] = await this.pool.query<SymbolRow[]>(
       `
-      SELECT id, name, type, category, path, description, content, CAST(meta AS CHAR) AS meta, usage_count
+      SELECT id, name, type, category, path, description, content, CAST(meta AS CHAR) AS meta, usage_count, created_at
       FROM symbols
       WHERE name = ?
       LIMIT 1
@@ -108,5 +119,56 @@ export class SymbolRepository {
     }
 
     return mapRow(rows[0]);
+  }
+
+  async searchByStructure(
+    fields: string[],
+    opts?: { type?: SymbolType; category?: string; limit?: number }
+  ): Promise<CodeSymbol[]> {
+    const normalized = fields.map((f) => f.trim()).filter(Boolean);
+    if (normalized.length === 0) return [];
+    const type = opts?.type;
+    const category = opts?.category?.trim();
+    const limit = opts?.limit ?? 20;
+
+    const matchesAll = (symbol: CodeSymbol) => {
+      const typeOk = type ? symbol.type === type : true;
+      const categoryOk = category
+        ? (symbol.category ?? "").toLowerCase().includes(category.toLowerCase())
+        : true;
+      if (!typeOk || !categoryOk) return false;
+      const propPool = [
+        ...getMetaArray(symbol.meta, "props"),
+        ...getMetaArray(symbol.meta, "params"),
+        ...getMetaArray(symbol.meta, "properties"),
+        ...getMetaArray(symbol.meta, "hooks")
+      ].map((v) => v.toLowerCase());
+      return normalized.every((field) => propPool.includes(field.toLowerCase()));
+    };
+
+    if (!this.pool) {
+      return inMemorySymbols.filter(matchesAll).slice(0, limit);
+    }
+
+    const params: Array<string | number> = [];
+    let sql = `
+      SELECT id, name, type, category, path, description, content, CAST(meta AS CHAR) AS meta, usage_count, created_at
+      FROM symbols
+      WHERE 1 = 1
+    `;
+
+    if (type) {
+      sql += " AND type = ?";
+      params.push(type);
+    }
+    if (category) {
+      sql += " AND category LIKE ?";
+      params.push(`%${category}%`);
+    }
+    sql += " ORDER BY usage_count DESC LIMIT ?";
+    params.push(Math.max(limit * 5, 50));
+
+    const [rows] = await this.pool.query<SymbolRow[]>(sql, params);
+    return rows.map(mapRow).filter(matchesAll).slice(0, limit);
   }
 }
