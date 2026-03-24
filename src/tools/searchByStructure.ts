@@ -26,26 +26,26 @@ export function createSearchByStructureTool(repository: SymbolRepository) {
       const query = input.fields.join(" ");
       const resultRows = input.ranked
         ? rankSymbols(query, rows).map((item) => ({
-            name: item.symbol.name,
-            type: item.symbol.type,
-            category: item.symbol.category,
-            path: item.symbol.path,
-            description: item.symbol.description,
-            usageCount: item.symbol.usageCount,
-            score: item.score,
-            reason: item.reason.summary,
-            reasonDetail: item.reason,
-            meta: item.symbol.meta
-          }))
+          name: item.symbol.name,
+          type: item.symbol.type,
+          category: item.symbol.category,
+          path: item.symbol.path,
+          description: item.symbol.description,
+          usageCount: item.symbol.usageCount,
+          score: item.score,
+          reason: item.reason.summary,
+          reasonDetail: item.reason,
+          meta: item.symbol.meta
+        }))
         : rows.map((r) => ({
-            name: r.name,
-            type: r.type,
-            category: r.category,
-            path: r.path,
-            description: r.description,
-            usageCount: r.usageCount,
-            meta: r.meta
-          }));
+          name: r.name,
+          type: r.type,
+          category: r.category,
+          path: r.path,
+          description: r.description,
+          usageCount: r.usageCount,
+          meta: r.meta
+        }));
       return {
         content: [
           {

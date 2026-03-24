@@ -7,6 +7,7 @@
 - Tool: `get_symbol_detail`
 - Tool: `search_by_structure`
 - Tool: `reindex`
+- Tool: `recommend_component`
 - Prompt: `reusable-code-advisor`（与 Cursor Skill 同工作流，见 `src/prompts/reusableCodeAdvisorPrompt.ts`）
 - MySQL Repository（可选启用）
 - Cursor Skill：`reusable-code-advisor`（`.cursor/skills/reusable-code-advisor/`，未改动，与 MCP Prompt 并行维护）
@@ -179,6 +180,22 @@ npm run index
 - `globPatterns`: 自定义扫描 glob 列表
 - `ignore`: 额外忽略规则
 - `dryRun`: `true` 时只扫描，不写 MySQL
+
+## 9) Phase 4（Skill）
+
+- 新增 Skill Tool：`recommend_component`
+- 流程已落地：关键词搜索 -> 结构过滤（可选 `props`）-> ranking -> detail 补全 -> 返回 reason
+- 新增 Prompt：`recommend-component`（用于在支持 MCP Prompt 的客户端快速触发该流程）
+
+示例：
+
+```json
+{
+  "query": "带校验的表单组件",
+  "props": ["value", "onChange"],
+  "limit": 3
+}
+```
 
 ## 7) VS Code 迁移
 

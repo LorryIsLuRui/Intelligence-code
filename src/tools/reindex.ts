@@ -12,7 +12,7 @@ export function createReindexTool() {
   return {
     name: "reindex",
     description:
-      "Rebuild symbols index from source files and write to MySQL. Use dryRun=true to only preview extraction count.",
+      "重建源码符号索引并写入 MySQL；设置 dryRun=true 时仅预览抽取数量，不落库。",
     inputSchema: reindexInput.shape,
     handler: async (input: z.infer<typeof reindexInput>) => {
       const startedAt = Date.now();

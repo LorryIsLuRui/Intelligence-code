@@ -99,11 +99,11 @@ export function rankSymbols(query: string, symbols: CodeSymbol[]): RankedSymbol[
         recency * RANK_WEIGHTS.recency +
         common * RANK_WEIGHTS.commonPath;
       const reasonParts: string[] = [];
-      if (text.score >= 0.85) reasonParts.push("text match high");
-      else if (text.score >= 0.65) reasonParts.push("description matched");
-      if (usage >= 0.6) reasonParts.push("high usage");
-      if (common >= 1) reasonParts.push("shared/common path");
-      if (reasonParts.length === 0) reasonParts.push("balanced relevance");
+      if (text.score >= 0.85) reasonParts.push("文本匹配度高");
+      else if (text.score >= 0.65) reasonParts.push("描述命中");
+      if (usage >= 0.6) reasonParts.push("使用频率高");
+      if (common >= 1) reasonParts.push("位于 shared/common 路径");
+      if (reasonParts.length === 0) reasonParts.push("综合相关性较好");
       return {
         symbol,
         score: Number(score.toFixed(3)),

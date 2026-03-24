@@ -21,7 +21,7 @@ export async function runReindex(options: ReindexOptions = {}): Promise<ReindexR
   validateEnv();
   const pool = getMySqlPool();
   if (!pool || !env.mysqlEnabled) {
-    throw new Error("MYSQL_ENABLED must be true before running reindex.");
+    throw new Error("执行 reindex 前必须开启 MYSQL_ENABLED=true。");
   }
 
   await pool.query("SELECT 1");

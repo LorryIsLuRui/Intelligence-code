@@ -11,6 +11,6 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error("Failed to start MCP server:", error);
+  console.error("MCP 服务启动失败：", error);
   process.exit(1);
 });
