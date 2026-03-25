@@ -1,6 +1,9 @@
 import type { Pool, RowDataPacket } from "mysql2/promise";
+import { env } from "../config/env.js";
 import { getMySqlPool } from "../db/mysql.js";
 import type { CodeSymbol, SymbolType } from "../types/symbol.js";
+import { createEmbeddingClient } from "../services/embeddingClient.js";
+import { cosineSimilarity } from "../services/vectorMath.js";
 
 interface SymbolRow extends RowDataPacket {
   id: number;
@@ -13,6 +16,7 @@ interface SymbolRow extends RowDataPacket {
   meta: string | null;
   usage_count: number;
   created_at?: string | null;
+  embedding?: unknown;
 }
 
 const inMemorySymbols: CodeSymbol[] = [
@@ -42,8 +46,27 @@ const inMemorySymbols: CodeSymbol[] = [
   }
 ];
 
-function mapRow(row: SymbolRow): CodeSymbol {
-  return {
+function parseEmbedding(raw: unknown): number[] | null {
+  if (raw == null) return null;
+  if (Array.isArray(raw)) {
+    const nums = raw.map((x) => Number(x)).filter((n) => Number.isFinite(n));
+    return nums.length === raw.length ? nums : null;
+  }
+  if (typeof raw === "string") {
+    try {
+      const j = JSON.parse(raw) as unknown;
+      if (!Array.isArray(j)) return null;
+      const nums = j.map((x) => Number(x)).filter((n) => Number.isFinite(n));
+      return nums.length === j.length ? nums : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function mapRow(row: SymbolRow, opts?: { includeEmbedding?: boolean }): CodeSymbol {
+  const base: CodeSymbol = {
     id: row.id,
     name: row.name,
     type: row.type,
@@ -55,6 +78,10 @@ function mapRow(row: SymbolRow): CodeSymbol {
     usageCount: row.usage_count,
     createdAt: row.created_at ?? null
   };
+  if (opts?.includeEmbedding) {
+    base.embedding = parseEmbedding(row.embedding);
+  }
+  return base;
 }
 
 function getMetaArray(meta: Record<string, unknown> | null, key: string): string[] {
@@ -96,7 +123,61 @@ export class SymbolRepository {
     sql += " ORDER BY usage_count DESC LIMIT 20";
 
     const [rows] = await this.pool.query<SymbolRow[]>(sql, params);
-    return rows.map(mapRow);
+    return rows.map((r) => mapRow(r));
+  }
+
+  /**
+   * Phase 5：对自然语言查询做向量检索，返回符号与余弦相似度（已去掉 embedding 列便于 JSON 输出）。
+   */
+  async searchSemanticHits(
+    query: string,
+    opts?: { type?: SymbolType; candidateLimit?: number; limit?: number }
+  ): Promise<Array<{ symbol: CodeSymbol; similarity: number }>> {
+    if (!env.embeddingServiceUrl) {
+      throw new Error("语义检索需配置 EMBEDDING_SERVICE_URL 并启动嵌入服务");
+    }
+    if (!this.pool) {
+      return [];
+    }
+
+    const candidateLimit = opts?.candidateLimit ?? 3000;
+    const limit = opts?.limit ?? 20;
+    const type = opts?.type;
+
+    const client = createEmbeddingClient(env.embeddingServiceUrl);
+    const [queryVec] = await client.embed([query.trim()]);
+    if (!queryVec?.length) {
+      throw new Error("查询向量为空");
+    }
+
+    let sql = `
+      SELECT id, name, type, category, path, description, content, CAST(meta AS CHAR) AS meta, usage_count, created_at, embedding
+      FROM symbols
+      WHERE embedding IS NOT NULL
+    `;
+    const params: Array<string | number> = [];
+
+    if (type) {
+      sql += " AND type = ?";
+      params.push(type);
+    }
+
+    sql += " ORDER BY usage_count DESC LIMIT ?";
+    params.push(candidateLimit);
+
+    const [rows] = await this.pool.query<SymbolRow[]>(sql, params);
+    const withVec = rows
+      .map((r) => mapRow(r, { includeEmbedding: true }))
+      .filter((s) => s.embedding && s.embedding.length === queryVec.length);
+
+    return withVec
+      .map((s) => {
+        const sim = cosineSimilarity(queryVec, s.embedding!);
+        const { embedding: _, ...rest } = s;
+        return { symbol: rest as CodeSymbol, similarity: sim };
+      })
+      .sort((a, b) => b.similarity - a.similarity)
+      .slice(0, limit);
   }
 
   async getByName(name: string): Promise<CodeSymbol | null> {
@@ -169,6 +250,6 @@ export class SymbolRepository {
     params.push(Math.max(limit * 5, 50));
 
     const [rows] = await this.pool.query<SymbolRow[]>(sql, params);
-    return rows.map(mapRow).filter(matchesAll).slice(0, limit);
+    return rows.map((r) => mapRow(r)).filter(matchesAll).slice(0, limit);
   }
 }

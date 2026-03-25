@@ -206,7 +206,7 @@ JSON_CONTAINS(meta->'$.props', '"onChange"')
 
 能力 3（可选）：语义搜索
 
-Node → Python → embedding
+Node（MCP / 索引 CLI）→ HTTP `POST /embed` → Python（sentence-transformers）→ 向量入库；检索时对 query 编码后在应用层余弦排序（可换 ANN）
 
 
 
@@ -385,9 +385,13 @@ Phase 4（Agent）
 
 
 
-Phase 5（可选）
+Phase 5（可选）— 语义检索
 
-	• Python embedding
+	• **Python FastAPI** 嵌入服务（`embedding-service/`，默认 `sentence-transformers` + `all-MiniLM-L6-v2`，384 维，L2 归一化）
+	• MySQL `symbols.embedding`（JSON 数组）；`npm run index` / `reindex` 在配置 `EMBEDDING_SERVICE_URL` 时对每条符号写入向量（失败则跳过更新、保留旧向量）
+	• MCP `search_symbols`：`semantic=true` 时对自然语言查询编码，与库内向量余弦相似度排序；可选 `limit`；大规模数据可演进为 pgvector / FAISS ANN
+	• 工程命令：`npm run embedding:dev`（需本机 `pip install -r embedding-service/requirements.txt`）；`.env` 增加 `EMBEDDING_SERVICE_URL=http://127.0.0.1:8765`
+	• 已有库需执行 `sql/migrations/003_add_embedding.sql`（新库已含于 `sql/schema.sql`）
 
 
 

@@ -12,7 +12,7 @@ export function createReindexTool() {
   return {
     name: "reindex",
     description:
-      "重建源码符号索引并写入 MySQL；设置 dryRun=true 时仅预览抽取数量，不落库。",
+      "重建源码符号索引并写入 MySQL；设置 dryRun=true 时仅预览抽取数量，不落库、不调用嵌入服务。若配置 EMBEDDING_SERVICE_URL，非 dryRun 时会写入向量列。",
     inputSchema: reindexInput.shape,
     handler: async (input: z.infer<typeof reindexInput>) => {
       const startedAt = Date.now();

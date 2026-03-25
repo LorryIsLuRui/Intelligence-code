@@ -10,6 +10,7 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "index": "tsx src/cli/index-codebase.ts",
+    "embedding:dev": "cd embedding-service && python3 -m uvicorn app:app --host 127.0.0.1 --port 8765",
     "docker:up": "docker compose up -d",
     "docker:down": "docker compose down",
     "docker:logs": "docker compose logs -f mysql"

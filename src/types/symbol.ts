@@ -11,4 +11,6 @@ export interface CodeSymbol {
   meta: Record<string, unknown> | null;
   usageCount: number;
   createdAt?: string | null;
+  /** Phase 5：入库向量（工具响应里通常会去掉以减小 payload） */
+  embedding?: number[] | null;
 }

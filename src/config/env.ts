@@ -10,7 +10,9 @@ export const env = {
   mysqlPort: Number(process.env.MYSQL_PORT ?? "3306"),
   mysqlUser: process.env.MYSQL_USER ?? "root",
   mysqlPassword: process.env.MYSQL_PASSWORD ?? "",
-  mysqlDatabase: process.env.MYSQL_DATABASE ?? "code_intelligence"
+  mysqlDatabase: process.env.MYSQL_DATABASE ?? "code_intelligence",
+  /** Phase 5：指向 Python FastAPI 嵌入服务根 URL，如 http://127.0.0.1:8765 */
+  embeddingServiceUrl: (process.env.EMBEDDING_SERVICE_URL ?? "").trim()
 };
 
 export function validateEnv(): void {

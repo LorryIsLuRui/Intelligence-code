@@ -4,7 +4,7 @@ import type { CodeSymbol } from "../types/symbol.js";
 export interface RankingReason {
   textMatch: {
     score: number;
-    matchedBy: "exact_name" | "name_contains" | "description_contains" | "weak";
+    matchedBy: "exact_name" | "name_contains" | "description_contains" | "weak" | "semantic";
   };
   usage: {
     score: number;
@@ -85,6 +85,57 @@ const RANK_WEIGHTS = {
   recency: 0.1,
   commonPath: 0.1
 } as const;
+
+/**
+ * Phase 5：以向量余弦相似度作为主文本维度，再叠加 usage / recency / common（与 `rankSymbols` 同权重）。
+ */
+export function rankSemanticHits(
+  hits: Array<{ symbol: CodeSymbol; similarity: number }>
+): RankedSymbol[] {
+  return hits
+    .map(({ symbol, similarity }) => {
+      const textScore = clamp01(similarity);
+      const usage = usageScore(symbol.usageCount);
+      const recency = recencyScore(symbol.createdAt);
+      const common = commonPathScore(symbol.path);
+      const score =
+        textScore * RANK_WEIGHTS.textMatch +
+        usage * RANK_WEIGHTS.usage +
+        recency * RANK_WEIGHTS.recency +
+        common * RANK_WEIGHTS.commonPath;
+      const reasonParts: string[] = [];
+      if (textScore >= 0.55) reasonParts.push("语义相似度高");
+      else if (textScore >= 0.4) reasonParts.push("语义相关");
+      if (usage >= 0.6) reasonParts.push("使用频率高");
+      if (common >= 1) reasonParts.push("位于 shared/common 路径");
+      if (reasonParts.length === 0) reasonParts.push("综合相关性较好");
+      return {
+        symbol,
+        score: Number(score.toFixed(3)),
+        reason: {
+          textMatch: {
+            score: Number(textScore.toFixed(3)),
+            matchedBy: "semantic" as const
+          },
+          usage: {
+            score: Number(usage.toFixed(3)),
+            usageCount: symbol.usageCount
+          },
+          recency: {
+            score: Number(recency.toFixed(3)),
+            daysSinceCreated: daysSinceCreated(symbol.createdAt)
+          },
+          commonPath: {
+            score: Number(common.toFixed(3)),
+            isCommonPath: common >= 1
+          },
+          weights: RANK_WEIGHTS,
+          summary: reasonParts.join(" + ")
+        }
+      };
+    })
+    .sort((a, b) => b.score - a.score);
+}
 
 export function rankSymbols(query: string, symbols: CodeSymbol[]): RankedSymbol[] {
   return symbols

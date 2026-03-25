@@ -25,6 +25,7 @@ async function main() {
   console.error(`[index] projectRoot=${projectRoot}`);
   const result = await runReindex({ projectRoot, globPatterns, ignore, dryRun: false });
   console.error(`[index] extracted ${result.extractedCount} symbol(s)`);
+  console.error(`[index] embeddings computed: ${result.embeddingsComputed}`);
   console.error("[index] upserted into MySQL");
 }
 

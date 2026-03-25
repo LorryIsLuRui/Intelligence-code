@@ -3,7 +3,7 @@
 最小可用的 Node MCP Server 框架，包含：
 
 - MCP Server（stdio）
-- Tool: `search_symbols`
+- Tool: `search_symbols`（支持 `semantic=true` 语义检索，Phase 5）
 - Tool: `get_symbol_detail`
 - Tool: `search_by_structure`
 - Tool: `reindex`
@@ -33,9 +33,12 @@ MYSQL_PORT=3306
 MYSQL_USER=root
 MYSQL_PASSWORD=devpassword
 MYSQL_DATABASE=code_intelligence
+
+# Phase 5（可选）：句向量服务根 URL，与 `npm run embedding:dev` 默认端口一致
+# EMBEDDING_SERVICE_URL=http://127.0.0.1:8765
 ```
 
-密码需与下方 Docker / 本机 MySQL 配置一致（`.env.example` 默认 `devpassword` 对应 Compose）。
+密码需与下方 Docker / 本机 MySQL 配置一致（文档示例里 `devpassword` 对应 Compose）。
 
 ### 用 Docker 启动 MySQL（推荐本地开发）
 
@@ -148,8 +151,8 @@ npm run index
 ## 6) 后续演进建议
 
 - 新增 Tool：`list_dependencies`、`get_usage_stats`
-- Ranking / 语义检索（Python embedding）
 - Indexer：更细的 selector 识别、`export default` 命名、类组件等
+- Phase 5 语义检索已落地（见下文）；后续可换 pgvector / FAISS、更大模型
 
 ## 8) Phase 3（增强）
 
@@ -196,6 +199,35 @@ npm run index
   "limit": 3
 }
 ```
+
+## 10) Phase 5（语义检索，可选）
+
+1. **迁移**：若库是在增加 `embedding` 列之前创建的，执行：
+
+```bash
+mysql -u root -p code_intelligence < sql/migrations/003_add_embedding.sql
+```
+
+2. **Python 依赖**（建议虚拟环境；首次运行会下载模型权重，体积约数百 MB）：
+
+```bash
+cd embedding-service
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+3. **启动嵌入服务**（默认 `127.0.0.1:8765`）：
+
+```bash
+npm run embedding:dev
+```
+
+4. **`.env`** 增加 `EMBEDDING_SERVICE_URL=http://127.0.0.1:8765`，再执行 **`npm run index`** 或 MCP **`reindex`**（`dryRun=false`）写入向量。未配置 URL 时与 Phase 2 行为一致，不写入 `embedding`。
+
+5. **`search_symbols`**：传入 `semantic: true` 可做自然语言检索；可选 `limit`（默认 20）。返回中会含 `semanticSimilarity`（余弦相似度）。当前实现按 `usage_count` 取最多 3000 条有向量的候选再精排；超大规模仓库请改为 ANN。
+
+环境变量 **`EMBEDDING_MODEL`**（仅 Python）：覆盖默认的 `all-MiniLM-L6-v2`。
 
 ## 7) VS Code 迁移
 

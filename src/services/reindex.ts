@@ -1,8 +1,10 @@
 import { resolve } from "node:path";
 import { env, validateEnv } from "../config/env.js";
 import { getMySqlPool } from "../db/mysql.js";
+import { indexedRowToEmbedText } from "../indexer/embedText.js";
 import { indexProject } from "../indexer/indexProject.js";
 import { upsertSymbols } from "../indexer/persistSymbols.js";
+import { createEmbeddingClient, embedAll } from "../services/embeddingClient.js";
 
 export interface ReindexOptions {
   projectRoot?: string;
@@ -15,6 +17,8 @@ export interface ReindexResult {
   projectRoot: string;
   extractedCount: number;
   upserted: boolean;
+  /** Phase 5：是否尝试写入了向量（需 EMBEDDING_SERVICE_URL + 列存在） */
+  embeddingsComputed: boolean;
 }
 
 export async function runReindex(options: ReindexOptions = {}): Promise<ReindexResult> {
@@ -33,13 +37,30 @@ export async function runReindex(options: ReindexOptions = {}): Promise<ReindexR
     ignore: options.ignore
   });
 
+  let embeddingsComputed = false;
+  let embeddingPayload: (number[] | null)[] | undefined;
+
+  if (!options.dryRun && rows.length > 0 && env.embeddingServiceUrl) {
+    try {
+      const client = createEmbeddingClient(env.embeddingServiceUrl);
+      const texts = rows.map(indexedRowToEmbedText);
+      const vecs = await embedAll(client, texts);
+      embeddingPayload = vecs;
+      embeddingsComputed = true;
+    } catch (err) {
+      console.error("[reindex] embedding skipped (service error):", err);
+      embeddingPayload = rows.map(() => null);
+    }
+  }
+
   if (!options.dryRun) {
-    await upsertSymbols(pool, rows);
+    await upsertSymbols(pool, rows, embeddingPayload);
   }
 
   return {
     projectRoot,
     extractedCount: rows.length,
-    upserted: !options.dryRun
+    upserted: !options.dryRun,
+    embeddingsComputed
   };
 }

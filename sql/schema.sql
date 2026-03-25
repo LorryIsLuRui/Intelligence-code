@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS symbols (
   content MEDIUMTEXT NULL,
   meta JSON NULL,
   usage_count INT NOT NULL DEFAULT 0,
+  embedding JSON NULL COMMENT 'Phase 5: L2-normalized vector from Python embedding service (e.g. 384-dim MiniLM)',
   insert_user VARCHAR(255) NOT NULL DEFAULT 'LorryIsLuRui',
   updated_user VARCHAR(255) NOT NULL DEFAULT 'LorryIsLuRui',
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
