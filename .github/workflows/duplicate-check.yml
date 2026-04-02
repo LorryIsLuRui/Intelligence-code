@@ -93,6 +93,7 @@ jobs:
                     --out-md duplicate-report.md \
                     --block-threshold $DUPLICATE_BLOCK_THRESHOLD \
                     --warn-threshold $DUPLICATE_WARN_THRESHOLD
+                    --is-mock-mode true
 
             - name: 上传报告（artifact）
               if: always()

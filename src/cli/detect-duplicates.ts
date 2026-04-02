@@ -142,22 +142,30 @@ async function main() {
     );
     const propsCoverageThreshold = Number(args.get('props-coverage') ?? '1');
     const candidateLimit = Number(args.get('candidate-limit') ?? '3000');
+    // Mock 模式：不连接真实服务，仅测试报告生成流程
+    const isMockMode = args.get('is-mock-mode') === 'true';
 
-    validateEnv();
-    const pool = getMySqlPool();
-    if (!pool || !env.mysqlEnabled) {
-        throw new Error(
-            'duplicate-check 需要 MYSQL_ENABLED=true 并可连接 MySQL。'
+    if (isMockMode) {
+        console.log(
+            '[duplicate-check] 🔧 Mock 模式：跳过 MySQL 和 embedding service'
         );
-    }
-    if (!env.embeddingServiceUrl) {
-        throw new Error(
-            'duplicate-check 需要 EMBEDDING_SERVICE_URL（embedding service）。'
-        );
+    } else {
+        validateEnv();
+        const pool = getMySqlPool();
+        if (!pool || !env.mysqlEnabled) {
+            throw new Error(
+                'duplicate-check 需要 MYSQL_ENABLED=true 并可连接 MySQL。'
+            );
+        }
+        if (!env.embeddingServiceUrl) {
+            throw new Error(
+                'duplicate-check 需要 EMBEDDING_SERVICE_URL（embedding service）。'
+            );
+        }
     }
 
     // Type narrowing for TS (pool is guaranteed non-null after guards above)
-    const mysqlPool = pool;
+    const mysqlPool = isMockMode ? null : getMySqlPool();
 
     const projectRoot = resolve(process.cwd());
     const changed = readLines(changedFilesPath)
@@ -204,10 +212,20 @@ async function main() {
         return;
     }
 
-    // 2) 计算本次变更代码块 embedding（批量）
-    const client = createEmbeddingClient(env.embeddingServiceUrl);
-    const texts = rows.map(indexedRowToEmbedText);
-    const vecs = await embedAll(client, texts);
+    // 2) 计算本次变更代码块 embedding（批量）或使用 mock
+    let vecs: number[][];
+    let client: ReturnType<typeof createEmbeddingClient> | null = null;
+
+    if (isMockMode) {
+        // Mock 模式：生成随机向量（维度 1024，与 embedding service 一致）
+        vecs = rows.map(() =>
+            Array.from({ length: 1024 }, () => Math.random() * 2 - 1)
+        );
+    } else {
+        client = createEmbeddingClient(env.embeddingServiceUrl);
+        const texts = rows.map(indexedRowToEmbedText);
+        vecs = await embedAll(client, texts);
+    }
 
     // 3) 对每个代码块：拉同 type 候选（有 embedding），算 cosine，取 top1
     type DbCandidate = {
@@ -220,6 +238,12 @@ async function main() {
     };
 
     async function loadCandidates(type: SymbolType): Promise<DbCandidate[]> {
+        if (isMockMode) {
+            // Mock 模式：返回空候选，模拟"无重复"的检测结果
+            return [];
+        }
+        if (!mysqlPool) return [];
+
         const [dbRows] = await mysqlPool.query<any[]>(
             `
         SELECT id, name, type, path, CAST(meta AS CHAR) AS meta, embedding
@@ -346,6 +370,7 @@ async function main() {
     // JSON 报告（供 workflow 读 blockingCount/maxSimilarity）
     const report = {
         ok: true,
+        mockMode: isMockMode,
         blockingCount,
         warningCount,
         maxSimilarity: toFixed4(maxSimilarity),
@@ -368,6 +393,12 @@ async function main() {
     // 中文 Markdown（PR 评论）
     const lines: string[] = [];
     lines.push('## 重复实现检测（CI）');
+    if (isMockMode) {
+        lines.push('');
+        lines.push(
+            '> ⚠️ **Mock 模式**：本次检测未连接真实 MySQL/embedding service，结果仅供参考。'
+        );
+    }
     lines.push('');
     lines.push(
         `- 阻断（blocking）阈值：语义相似度 ≥ **${blockThreshold}** 且 **props 超集**`
