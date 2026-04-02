@@ -1,0 +1,22 @@
+{
+    "mcpServers": {
+        "code-intelligence-mcp": {
+            "command": "/usr/local/bin/node",
+            "args": [
+                "--no-warnings",
+                "/Users/ruilu/Desktop/code/Intelligence-code/scripts/mcp-dev-watch.mjs"
+            ],
+            "env": {
+                "NODE_ENV": "development",
+                "PATH": "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+                "MYSQL_ENABLED": "true",
+                "MYSQL_HOST": "127.0.0.1",
+                "MYSQL_PORT": "3306",
+                "MYSQL_USER": "root",
+                "MYSQL_PASSWORD": "devpassword",
+                "MYSQL_DATABASE": "code_intelligence"
+            },
+            "cwd": "/Users/ruilu/Desktop/code/Intelligence-code"
+        }
+    }
+}
