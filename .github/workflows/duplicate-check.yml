@@ -41,6 +41,9 @@ jobs:
 
             # embedding service（如你想依赖远端服务，可直接把 URL 写到 secrets 并删掉下面“启动服务”步骤）
             # EMBEDDING_SERVICE_URL: 'http://127.0.0.1:8765'
+        permissions:
+            contents: write # 允许向 Commit 发表评论
+            pull-requests: write # 允许向 Pull Request 发表评论
 
         steps:
             - name: 拉取代码
