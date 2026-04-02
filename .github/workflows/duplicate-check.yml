@@ -111,21 +111,41 @@ jobs:
                       duplicate-report.md
                       changed_files.txt
 
-            - name: PR 评论（中文）
+            - name: PR 或 Commit 评论
               if: always()
               env:
                   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
               run: |
+                  # 1. 准备评论内容
                   if [ -f duplicate-report.md ]; then
                     BODY="$(cat duplicate-report.md)"
                   else
-                    BODY="## 重复实现检测（CI）\n\n未生成报告文件（duplicate-report.md）。"
+                    BODY="## 重复实现检测（CI）
+                    
+                    未生成报告文件（duplicate-report.md）。"
                   fi
 
+                  # 2. 分场景处理评论逻辑
                   if [ "${{ github.event_name }}" = "pull_request" ]; then
-                    # PR 事件：评论到 PR
+                    # --- 场景 A：Pull Request 事件 ---
+                    echo "检测到 PR 事件，评论到 PR #${{ github.event.pull_request.number }}"
                     gh pr comment ${{ github.event.pull_request.number }} --body "$BODY"
+
                   else
-                    # Push 事件：评论到 workflow run
-                    gh pr comment --body "$BODY"
+                    # --- 场景 B：Push 事件 ---
+                    # 尝试寻找该 Commit 关联的开启状态的 PR 编号
+                    PR_NUMBER=$(gh pr list --hash ${{ github.sha }} --state open --json number --jq '.[0].number')
+
+                    if [ -n "$PR_NUMBER" ]; then
+                      echo "检测到 Push 关联的 PR #$PR_NUMBER，进行评论..."
+                      gh pr comment $PR_NUMBER --body "$BODY"
+                    else
+                      # 如果该 push 不属于任何 PR（比如直接推送到 main），则评论到 Commit 本身
+                      echo "未发现关联 PR，评论将发表在 Commit ${{ github.sha }} 上"
+                      gh api \
+                        --method POST \
+                        -H "Accept: application/vnd.github+json" \
+                        /repos/${{ github.repository }}/commits/${{ github.sha }}/comments \
+                        -f body="$BODY"
+                    fi
                   fi
