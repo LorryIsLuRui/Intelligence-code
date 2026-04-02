@@ -1,12 +1,27 @@
+# 没有服务器，先mock
+# 这个 workflow 在 PR 创建或更新时触发，执行以下步骤：
+# 1. 拉取代码并安装依赖
+# 2. 可选：启动本地 embedding service（如果你不想在 CI 内启动，也可以依赖远端服务，直接把 URL 写到 secrets 并删掉下面相关步骤）
+# 3. 计算变更文件列表
+# 4. 运行重复检测脚本，生成报告
+# 5. 上传报告作为 artifact（以供下载）
+# 6. 在 PR 下发表评论，展示检测结果（如果报告过大或有敏感信息，也可以只发个简短消息并引导 reviewer 下载 artifact 查看详细报告）
+
 name: 重复实现检测
 
 on:
+    push: # 只要执行 git push，就会触发 workflow
+        branches:
+            - main
     pull_request:
         types: [opened, synchronize, reopened]
 
 permissions:
     contents: read
     pull-requests: write
+concurrency:
+    group: ${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: true
 
 jobs:
     duplicate-check:
@@ -17,60 +32,60 @@ jobs:
             DUPLICATE_WARN_THRESHOLD: '0.85'
 
             # MySQL（建议放 secrets）
-            MYSQL_ENABLED: 'true'
-            MYSQL_HOST: ${{ secrets.MYSQL_HOST }}
-            MYSQL_PORT: ${{ secrets.MYSQL_PORT }}
-            MYSQL_USER: ${{ secrets.MYSQL_USER }}
-            MYSQL_PASSWORD: ${{ secrets.MYSQL_PASSWORD }}
-            MYSQL_DATABASE: ${{ secrets.MYSQL_DATABASE }}
+            # MYSQL_ENABLED: 'true'
+            # MYSQL_HOST: ${{ secrets.MYSQL_HOST }}
+            # MYSQL_PORT: ${{ secrets.MYSQL_PORT }}
+            # MYSQL_USER: ${{ secrets.MYSQL_USER }}
+            # MYSQL_PASSWORD: ${{ secrets.MYSQL_PASSWORD }}
+            # MYSQL_DATABASE: ${{ secrets.MYSQL_DATABASE }}
 
             # embedding service（如你想依赖远端服务，可直接把 URL 写到 secrets 并删掉下面“启动服务”步骤）
-            EMBEDDING_SERVICE_URL: 'http://127.0.0.1:8765'
+            # EMBEDDING_SERVICE_URL: 'http://127.0.0.1:8765'
 
         steps:
-            - name: 拉取代码
-              uses: actions/checkout@v4
-              with:
-                  fetch-depth: 0
+            # - name: 拉取代码
+            #   uses: actions/checkout@v4
+            #   with:
+            #       fetch-depth: 0
 
-            - name: 安装 Node
-              uses: actions/setup-node@v4
-              with:
-                  node-version: '20'
-                  cache: 'npm'
+            # - name: 安装 Node
+            #   uses: actions/setup-node@v4
+            #   with:
+            #       node-version: '20'
+            #       cache: 'npm'
 
-            - name: 安装依赖
-              run: npm ci
+            # - name: 安装依赖
+            #   run: npm ci
 
-            # ---- 可选：启动本地 embedding service（在 CI 内现拉模型较慢；企业建议用镜像缓存或远端服务）----
-            - name: 安装 Python
-              uses: actions/setup-python@v5
-              with:
-                  python-version: '3.11'
+            # # ---- 可选：启动本地 embedding service（在 CI 内现拉模型较慢；企业建议用镜像缓存或远端服务）----
+            # - name: 安装 Python
+            #   uses: actions/setup-python@v5
+            #   with:
+            #       python-version: '3.11'
 
-            - name: 启动 embedding service（可选）
-              run: |
-                  python -m pip install --upgrade pip
-                  pip install -r embedding-service/requirements.txt
-                  python -m uvicorn embedding-service.app:app --host 127.0.0.1 --port 8765 &
-                  for i in {1..30}; do
-                    if curl -sf http://127.0.0.1:8765/health > /dev/null; then
-                      echo "embedding service ready"
-                      exit 0
-                    fi
-                    sleep 1
-                  done
-                  echo "embedding service not ready"
-                  exit 1
+            # - name: 启动 embedding service（可选）
+            #   run: |
+            #       python -m pip install --upgrade pip
+            #       pip install -r embedding-service/requirements.txt
+            #       python -m uvicorn embedding-service.app:app --host 127.0.0.1 --port 8765 &
+            #       for i in {1..30}; do
+            #         if curl -sf http://127.0.0.1:8765/health > /dev/null; then
+            #           echo "embedding service ready"
+            #           exit 0
+            #         fi
+            #         sleep 1
+            #       done
+            #       echo "embedding service not ready"
+            #       exit 1
 
-            - name: 计算变更文件列表
-              run: |
-                  git fetch origin ${{ github.base_ref }} --depth=1
-                  git diff --name-only origin/${{ github.base_ref }}...HEAD > changed_files.txt
-                  echo "Changed files:"
-                  cat changed_files.txt
+            # - name: 计算变更文件列表
+            #   run: |
+            #       git fetch origin ${{ github.base_ref }} --depth=1
+            #       git diff --name-only origin/${{ github.base_ref }}...HEAD > changed_files.txt
+            #       echo "Changed files:"
+            #       cat changed_files.txt
 
-            - name: 运行重复检测脚本（暂无server，只能本地运行）
+            - name: 运行重复检测脚本
               run: |
                   npm run detect-duplicates -- \
                     --changed-files changed_files.txt \
