@@ -121,4 +121,11 @@ jobs:
                   else
                     BODY="## 重复实现检测（CI）\n\n未生成报告文件（duplicate-report.md）。"
                   fi
-                  gh pr comment ${{ github.event.pull_request.number }} --body "$BODY"
+
+                  if [ "${{ github.event_name }}" = "pull_request" ]; then
+                    # PR 事件：评论到 PR
+                    gh pr comment ${{ github.event.pull_request.number }} --body "$BODY"
+                  else
+                    # Push 事件：评论到 workflow run
+                    gh run comment ${{ github.run_id }} --body "$BODY"
+                  fi
