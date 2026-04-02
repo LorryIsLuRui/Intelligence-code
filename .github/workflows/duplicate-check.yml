@@ -127,5 +127,5 @@ jobs:
                     gh pr comment ${{ github.event.pull_request.number }} --body "$BODY"
                   else
                     # Push 事件：评论到 workflow run
-                    gh pr comment ${{ github.run_id }} --body "$BODY"
+                    gh pr comment --body "$BODY"
                   fi
