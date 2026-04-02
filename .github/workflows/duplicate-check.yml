@@ -78,12 +78,18 @@ jobs:
             #       echo "embedding service not ready"
             #       exit 1
 
-            # - name: 计算变更文件列表
-            #   run: |
-            #       git fetch origin ${{ github.base_ref }} --depth=1
-            #       git diff --name-only origin/${{ github.base_ref }}...HEAD > changed_files.txt
-            #       echo "Changed files:"
-            #       cat changed_files.txt
+            - name: 计算变更文件列表
+              run: |
+                  # PR 场景：对比 base_ref；push 场景：对比上一 commit
+                  if [ "${{ github.event_name }}" = "pull_request" ] && [ -n "${{ github.base_ref }}" ]; then
+                    git fetch origin ${{ github.base_ref }} --depth=1
+                    git diff --name-only origin/${{ github.base_ref }}...HEAD > changed_files.txt
+                  else
+                    # push 或无 base_ref 时，检测本次 push 涉及的文件
+                    git diff --name-only HEAD~1 HEAD > changed_files.txt 2>/dev/null || echo "" > changed_files.txt
+                  fi
+                  echo "Changed files:"
+                  cat changed_files.txt
 
             - name: 运行重复检测脚本
               run: |
