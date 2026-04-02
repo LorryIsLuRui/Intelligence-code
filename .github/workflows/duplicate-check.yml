@@ -43,19 +43,19 @@ jobs:
             # EMBEDDING_SERVICE_URL: 'http://127.0.0.1:8765'
 
         steps:
-            # - name: 拉取代码
-            #   uses: actions/checkout@v4
-            #   with:
-            #       fetch-depth: 0
+            - name: 拉取代码
+              uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
 
-            # - name: 安装 Node
-            #   uses: actions/setup-node@v4
-            #   with:
-            #       node-version: '20'
-            #       cache: 'npm'
+            - name: 安装 Node
+              uses: actions/setup-node@v4
+              with:
+                  node-version: '20'
+                  cache: 'npm'
 
-            # - name: 安装依赖
-            #   run: npm ci
+            - name: 安装依赖
+              run: npm ci
 
             # # ---- 可选：启动本地 embedding service（在 CI 内现拉模型较慢；企业建议用镜像缓存或远端服务）----
             # - name: 安装 Python
