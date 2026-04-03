@@ -1,10 +1,11 @@
 /**
- * 扫描源码目录，用 ts-morph 解析导出并生成待写入 MySQL 的代码块行。
+ * 扫描源码目录，用 ts-morph 解析 TS/TSX，Babel 解析 JS/JSX，生成待写入 MySQL 的代码块行。
  */
 
 import fg from 'fast-glob';
 import { join, resolve } from 'node:path';
 import { Node, Project, type SourceFile } from 'ts-morph';
+import { readFileSync } from 'node:fs';
 import type { SymbolType } from '../types/symbol.js';
 import {
     extractFunctionMeta,
@@ -20,6 +21,16 @@ import {
     isTsxFile,
     snippetForNode,
 } from './heuristics.js';
+import { parseJsFile } from './babelParser.js';
+
+/** 判断文件类型 */
+function isJsFile(filePath: string): boolean {
+    return filePath.endsWith('.js') || filePath.endsWith('.jsx');
+}
+
+function isTsFile(filePath: string): boolean {
+    return filePath.endsWith('.ts') || filePath.endsWith('.tsx');
+}
 
 /** 单条索引结果，对应 `symbols` 表一行（尚未含自增 id / usage_count）。 */
 export interface IndexedSymbolRow {
@@ -219,35 +230,53 @@ export async function indexProject(
         onlyFiles: true,
         dot: false,
     });
-
+    console.error(`[indexProject] found ${files.length} file(s)`);
     if (files.length === 0) {
         return [];
     }
 
-    const project = new Project({
-        tsConfigFilePath: join(projectRoot, 'tsconfig.json'),
-        skipAddingFilesFromTsConfig: true,
-        skipFileDependencyResolution: true,
-    });
-
-    project.addSourceFilesAtPaths(files);
+    // 分离 TS/TSX 文件和 JS/JSX 文件
+    const tsFiles = files.filter(isTsFile);
+    const jsFiles = files.filter(isJsFile);
 
     const out: IndexedSymbolRow[] = [];
 
-    for (const sf of project.getSourceFiles()) {
-        const exported = sf.getExportedDeclarations();
-        for (const [exportName, decls] of exported) {
-            for (const decl of decls) {
-                const row = processDeclaration(
-                    exportName,
-                    decl,
-                    sf,
-                    projectRoot
-                );
-                if (row) {
-                    out.push(row);
+    // 处理 TS/TSX 文件
+    if (tsFiles.length > 0) {
+        const project = new Project({
+            tsConfigFilePath: join(projectRoot, 'tsconfig.json'),
+            skipAddingFilesFromTsConfig: true,
+            skipFileDependencyResolution: true,
+        });
+
+        project.addSourceFilesAtPaths(tsFiles);
+
+        for (const sf of project.getSourceFiles()) {
+            const exported = sf.getExportedDeclarations();
+            for (const [exportName, decls] of exported) {
+                for (const decl of decls) {
+                    const row = processDeclaration(
+                        exportName,
+                        decl,
+                        sf,
+                        projectRoot
+                    );
+                    if (row) {
+                        out.push(row);
+                    }
                 }
             }
+        }
+    }
+
+    // 处理 JS/JSX 文件
+    for (const file of jsFiles) {
+        try {
+            const content = readFileSync(file, 'utf-8');
+            const rows = parseJsFile(file, content, projectRoot);
+            out.push(...rows);
+        } catch (e) {
+            console.error(`[indexProject] Failed to parse ${file}:`, e);
         }
     }
 
