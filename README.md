@@ -156,11 +156,11 @@ npm run index
 
 可选环境变量（见 `.env.example`）：
 
-| 变量           | 含义                                    |
-| -------------- | --------------------------------------- |
-| `INDEX_ROOT`   | 工程根目录，默认当前工作目录            |
-| `INDEX_GLOB`   | 逗号分隔 glob，默认 `src/**/*.{ts,tsx}` |
-| `INDEX_IGNORE` | 额外忽略的 glob 片段（逗号分隔）        |
+| 变量           | 含义                                             |
+| -------------- | ------------------------------------------------ |
+| `INDEX_ROOT`   | 工程根目录，默认当前工作目录                     |
+| `INDEX_GLOB`   | 空格分隔 glob，默认 `src/**/*.{ts,tsx}`         |
+| `INDEX_IGNORE` | 额外忽略的 glob 片段（空格分隔）                 |
 
 **分类规则（首版启发式）**：`interface` / `type` → `type`；`.tsx` 且函数体含 JSX → `component`；路径或导出名含 `selector` → `selector`；其余导出函数 → `util`；`class` → `util`（可后续细化）。
 

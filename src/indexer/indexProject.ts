@@ -212,7 +212,7 @@ export async function indexProject(
         p.startsWith('/') ? p : join(projectRoot, p).replace(/\\/g, '/')
     );
     const ignore = [...DEFAULT_IGNORE, ...(opts.ignore ?? [])];
-
+    console.error(`[indexProject] patterns: ${patterns.join(', ')}`);
     const files = await fg(patterns, {
         absolute: true,
         ignore,
