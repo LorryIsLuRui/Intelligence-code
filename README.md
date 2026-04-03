@@ -50,8 +50,8 @@ npm run docker:up
 # 或：docker compose up -d
 ```
 
-3. 首次启动会自动挂载 `sql/schema.sql` 到 `docker-entrypoint-initdb.d`，**创建库表**（仅**空数据卷**时执行一次）。  
-4. 复制 `.env.example` 为 `.env`，设置 `MYSQL_ENABLED=true`，`MYSQL_PASSWORD` 与 `docker-compose.yml` 里 `MYSQL_ROOT_PASSWORD`（默认 `devpassword`）一致。  
+3. 首次启动会自动挂载 `sql/schema.sql` 到 `docker-entrypoint-initdb.d`，**创建库表**（仅**空数据卷**时执行一次）。
+4. 复制 `.env.example` 为 `.env`，设置 `MYSQL_ENABLED=true`，`MYSQL_PASSWORD` 与 `docker-compose.yml` 里 `MYSQL_ROOT_PASSWORD`（默认 `devpassword`）一致。
 5. 等待容器健康（约数十秒）：
 
 ```bash
@@ -62,11 +62,11 @@ docker compose ps
 
 常用命令：
 
-| 命令 | 说明 |
-|------|------|
-| `npm run docker:logs` | 查看 MySQL 日志 |
-| `npm run docker:down` | 停止容器（数据卷保留，库仍在） |
-| `docker compose down -v` | **删除卷**（清空库，慎用） |
+| 命令                     | 说明                           |
+| ------------------------ | ------------------------------ |
+| `npm run docker:logs`    | 查看 MySQL 日志                |
+| `npm run docker:down`    | 停止容器（数据卷保留，库仍在） |
+| `docker compose down -v` | **删除卷**（清空库，慎用）     |
 
 **端口冲突**：若本机已有服务占用 `3306`，把 `docker-compose.yml` 里 `ports` 改为 `"3307:3306"`，并在 `.env` 设 `MYSQL_PORT=3307`。
 
@@ -103,13 +103,13 @@ npm run dev:mcp
 
 ```json
 {
-  "mcpServers": {
-    "code-intelligence-mcp": {
-      "command": "node",
-      "args": ["/绝对路径/Intelligence-code/scripts/mcp-dev-watch.mjs"],
-      "cwd": "/绝对路径/Intelligence-code"
+    "mcpServers": {
+        "code-intelligence-mcp": {
+            "command": "node",
+            "args": ["/绝对路径/Intelligence-code/scripts/mcp-dev-watch.mjs"],
+            "cwd": "/绝对路径/Intelligence-code"
+        }
     }
-  }
 }
 ```
 
@@ -125,8 +125,8 @@ npm run dev:mcp
 ## 5) Phase 2：代码索引（ts-morph + fast-glob → MySQL）
 
 1. **建表 / 迁移**
-   - 新库：执行 `sql/schema.sql`（已含 `(path, name)` 唯一索引，便于重复执行 `npm run index` 时 upsert）。
-   - 旧库若只有早期表结构：执行 `sql/migrations/002_symbols_unique_path_name.sql`（若已有重复 `path+name` 需先清理）。
+    - 新库：执行 `sql/schema.sql`（已含 `(path, name)` 唯一索引，便于重复执行 `npm run index` 时 upsert）。
+    - 旧库若只有早期表结构：执行 `sql/migrations/002_symbols_unique_path_name.sql`（若已有重复 `path+name` 需先清理）。
 
 2. **配置 MySQL**（`.env` 中 `MYSQL_ENABLED=true` 等）。
 
@@ -138,11 +138,11 @@ npm run index
 
 可选环境变量（见 `.env.example`）：
 
-| 变量 | 含义 |
-|------|------|
-| `INDEX_ROOT` | 工程根目录，默认当前工作目录 |
-| `INDEX_GLOB` | 逗号分隔 glob，默认 `src/**/*.{ts,tsx}` |
-| `INDEX_IGNORE` | 额外忽略的 glob 片段（逗号分隔） |
+| 变量           | 含义                                    |
+| -------------- | --------------------------------------- |
+| `INDEX_ROOT`   | 工程根目录，默认当前工作目录            |
+| `INDEX_GLOB`   | 逗号分隔 glob，默认 `src/**/*.{ts,tsx}` |
+| `INDEX_IGNORE` | 额外忽略的 glob 片段（逗号分隔）        |
 
 **分类规则（首版启发式）**：`interface` / `type` → `type`；`.tsx` 且函数体含 JSX → `component`；路径或导出名含 `selector` → `selector`；其余导出函数 → `util`；`class` → `util`（可后续细化）。
 
@@ -164,9 +164,9 @@ npm run index
 
 ```json
 {
-  "fields": ["onChange", "value"],
-  "type": "component",
-  "limit": 10
+    "fields": ["onChange", "value"],
+    "type": "component",
+    "limit": 10
 }
 ```
 
@@ -174,11 +174,12 @@ npm run index
 
 ```json
 {
-  "dryRun": false
+    "dryRun": false
 }
 ```
 
 可选参数：
+
 - `projectRoot`: 指定索引根目录（默认 MCP 进程当前目录）
 - `globPatterns`: 自定义扫描 glob 列表
 - `ignore`: 额外忽略规则
@@ -194,9 +195,9 @@ npm run index
 
 ```json
 {
-  "query": "带校验的表单组件",
-  "props": ["value", "onChange"],
-  "limit": 3
+    "query": "带校验的表单组件",
+    "props": ["value", "onChange"],
+    "limit": 3
 }
 ```
 
@@ -233,5 +234,43 @@ npm run embedding:dev
 
 迁移步骤见 `docs/vscode-mcp-migration.md`。
 
+# 使用说明
 
+Run with:
 
+````bash
+npx code-intelligence-mcp
+---
+
+### MCP 配置（核心）
+
+```md
+## MCP Config
+
+```json
+{
+  "mcpServers": {
+    "code-intelligence": {
+      "command": "npx",
+      "args": ["code-intelligence-mcp"]
+    }
+  }
+}
+---
+
+### 支持的 Tools Prompts
+
+```md
+## Tools
+
+- search_symbols
+- get_symbol_detail
+- search_by_structure
+- recommend_component
+- reindex
+
+## Prompts
+
+- recommend-component
+- reusable-code-advisor
+````
