@@ -1,6 +1,6 @@
 {
-    "name": "code-intelligence-mcp",
-    "version": "1.0.0",
+    "name": "@lorrylurui/code-intelligence-mcp",
+    "version": "1.0.1",
     "private": false,
     "description": "MCP server for code intelligence with symbol search and reusable code recommendation",
     "type": "module",
@@ -9,7 +9,8 @@
         "dist"
     ],
     "bin": {
-        "code-intelligence-mcp": "./dist/index.js"
+        "code-intelligence-mcp": "./dist/index.js",
+        "code-intelligence-index": "./dist/cli/index-codebase.js"
     },
     "scripts": {
         "dev": "tsx watch --clear-screen=false --exclude node_modules --exclude dist src/index.ts",
@@ -37,5 +38,9 @@
         "@types/node": "^22.10.1",
         "tsx": "^4.19.2",
         "typescript": "^5.6.3"
+    },
+    "publishConfig": {
+        "registry": "https://registry.npmjs.org/",
+        "access": "public"
     }
 }

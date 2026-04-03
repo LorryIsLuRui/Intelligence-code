@@ -11,6 +11,8 @@ export const env = {
   mysqlUser: process.env.MYSQL_USER ?? "root",
   mysqlPassword: process.env.MYSQL_PASSWORD ?? "",
   mysqlDatabase: process.env.MYSQL_DATABASE ?? "code_intelligence",
+  /** symbols 表名，可通过 MYSQL_SYMBOLS_TABLE 环境变量配置 */
+  mysqlSymbolsTable: process.env.MYSQL_SYMBOLS_TABLE ?? "symbols",
   /** Phase 5：指向 Python FastAPI 嵌入服务根 URL，如 http://127.0.0.1:8765 */
   embeddingServiceUrl: (process.env.EMBEDDING_SERVICE_URL ?? "").trim()
 };

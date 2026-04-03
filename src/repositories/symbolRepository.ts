@@ -126,7 +126,7 @@ export class SymbolRepository {
         const params: Array<string> = [`%${query}%`];
         let sql = `
       SELECT id, name, type, category, path, description, content, CAST(meta AS CHAR) AS meta, usage_count, created_at
-      FROM symbols
+      FROM ${env.mysqlSymbolsTable}
       WHERE (name LIKE ? OR description LIKE ?)
     `;
         params.push(`%${query}%`);
@@ -170,7 +170,7 @@ export class SymbolRepository {
 
         let sql = `
       SELECT id, name, type, category, path, description, content, CAST(meta AS CHAR) AS meta, usage_count, created_at, embedding
-      FROM symbols
+      FROM ${env.mysqlSymbolsTable}
       WHERE embedding IS NOT NULL
     `;
         const params: Array<string | number> = [];
@@ -212,7 +212,7 @@ export class SymbolRepository {
         const [rows] = await this.pool.query<SymbolRow[]>(
             `
       SELECT id, name, type, category, path, description, content, CAST(meta AS CHAR) AS meta, usage_count, created_at
-      FROM symbols
+      FROM ${env.mysqlSymbolsTable}
       WHERE name = ?
       LIMIT 1
       `,
@@ -262,7 +262,7 @@ export class SymbolRepository {
         const params: Array<string | number> = [];
         let sql = `
       SELECT id, name, type, category, path, description, content, CAST(meta AS CHAR) AS meta, usage_count, created_at
-      FROM symbols
+      FROM ${env.mysqlSymbolsTable}
       WHERE 1 = 1
     `;
 

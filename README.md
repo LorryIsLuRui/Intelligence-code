@@ -79,6 +79,24 @@ docker compose ps
 mysql -u root -p code_intelligence < sql/schema.sql
 ```
 
+### 自定义表名（第三方项目集成）
+
+若需使用不同的表名，可通过环境变量配置：
+
+```bash
+# 设置自定义表名
+export MYSQL_SYMBOLS_TABLE=my_project_symbols
+
+# 然后server代码内部执行建表（表名会在代码中动态替换）
+mysql -u root -p code_intelligence -e "$(node -e \"import('./dist/db/schema.js').then(m => console.log(m.getSymbolsTableSQL()))\")"
+```
+
+或在 `.env` 中配置：
+
+```env
+MYSQL_SYMBOLS_TABLE=my_project_symbols
+```
+
 ## 4) 本地运行
 
 ### 普通开发（热更新）
@@ -239,7 +257,8 @@ npm run embedding:dev
 Run with:
 
 ````bash
-npx code-intelligence-mcp
+- 脚本 cli 启动：npx code-intelligence-mcp（走mcp不执行）
+- 给项目做索引，运行：npx code-intelligence-index, 项目根目录取配置或者cwd（重要，首次以及后续需要时执行：新项目必须执行一次建表）
 ---
 
 ### MCP 配置（核心）

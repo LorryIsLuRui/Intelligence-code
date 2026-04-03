@@ -247,7 +247,7 @@ async function main() {
         const [dbRows] = await mysqlPool.query<any[]>(
             `
         SELECT id, name, type, path, CAST(meta AS CHAR) AS meta, embedding
-        FROM symbols
+        FROM ${env.mysqlSymbolsTable}
         WHERE type = ? AND embedding IS NOT NULL
         ORDER BY usage_count DESC
         LIMIT ?
