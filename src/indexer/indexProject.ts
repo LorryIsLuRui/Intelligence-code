@@ -4,7 +4,7 @@
 
 import fg from 'fast-glob';
 import { join, resolve } from 'node:path';
-import { Node, Project, type SourceFile, type ProjectOptions } from 'ts-morph';
+import { Node, Project, type SourceFile } from 'ts-morph';
 import { readFileSync, existsSync } from 'node:fs';
 import type { SymbolType } from '../types/symbol.js';
 import {
@@ -209,6 +209,15 @@ const DEFAULT_IGNORE = [
     '**/dist/**',
     '**/.git/**',
     '**/coverage/**',
+    '**/build/**',
+    '**/.next/**',
+    '**/.nuxt/**',
+    '**/.output/**',
+    '**/vendor/**',
+    '**/.cache/**',
+    '**/.venv/**',
+    '**/dist-srv/**',
+    '**/.turbo/**',
 ];
 
 /**
@@ -241,20 +250,15 @@ export async function indexProject(
 
     const out: IndexedSymbolRow[] = [];
 
-    // 处理 TS/TSX 文件
-    if (tsFiles.length > 0) {
-        const tsConfigPath = join(projectRoot, 'tsconfig.json');
-        const projectOptions: Partial<ProjectOptions> = {
+    // 处理 TS/TSX 文件（只有 tsconfig.json 存在时才处理）
+    const tsConfigPath = join(projectRoot, 'tsconfig.json');
+    const hasTsConfig = existsSync(tsConfigPath);
+    if (tsFiles.length > 0 && hasTsConfig) {
+        const project = new Project({
+            tsConfigFilePath: tsConfigPath,
             skipAddingFilesFromTsConfig: true,
             skipFileDependencyResolution: true,
-        };
-
-        // 只在 tsconfig.json 存在时传入，否则使用默认配置
-        if (existsSync(tsConfigPath)) {
-            projectOptions.tsConfigFilePath = tsConfigPath;
-        }
-
-        const project = new Project(projectOptions);
+        });
 
         project.addSourceFilesAtPaths(tsFiles);
 

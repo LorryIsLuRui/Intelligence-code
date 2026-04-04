@@ -1,6 +1,7 @@
 import dotenv from 'dotenv';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { existsSync, readFileSync } from 'node:fs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '../../');
@@ -19,15 +20,27 @@ dotenv.config({
     override: false,
 });
 
-// 尝试从第三方项目目录加载 .env（INDEX_ROOT 或 cwd）
+// 尝试从第三方项目目录加载 .env，按变量维度覆盖（只覆盖第三方明确配置的变量）
 const clientProjectRoot = process.env.INDEX_ROOT || process.cwd();
-console.error(
-    `[Config] Loading .env from client project root: ${clientProjectRoot}`
-);
-dotenv.config({
-    path: path.resolve(clientProjectRoot, '.env'),
-    override: true,
-});
+const clientEnvPath = path.resolve(clientProjectRoot, '.env');
+if (existsSync(clientEnvPath)) {
+    console.error(`[Config] Merging .env from client project root: ${clientProjectRoot}`);
+    // 手动解析第三方 .env，只覆盖其明确配置的变量
+    const clientEnvContent = readFileSync(clientEnvPath, 'utf-8');
+    for (const line of clientEnvContent.split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#')) continue;
+        const eqIdx = trimmed.indexOf('=');
+        if (eqIdx === -1) continue;
+        const key = trimmed.slice(0, eqIdx).trim();
+        const value = trimmed.slice(eqIdx + 1).trim();
+        // 移除引号
+        const cleanValue = value.replace(/^["']|["']$/g, '');
+        if (key) {
+            process.env[key] = cleanValue;
+        }
+    }
+}
 
 // 外部传入的 env 已在上一步保留，这里确保环境变量已正确设置
 for (const arg of process.argv) {
