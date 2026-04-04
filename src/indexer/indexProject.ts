@@ -4,8 +4,8 @@
 
 import fg from 'fast-glob';
 import { join, resolve } from 'node:path';
-import { Node, Project, type SourceFile } from 'ts-morph';
-import { readFileSync } from 'node:fs';
+import { Node, Project, type SourceFile, type ProjectOptions } from 'ts-morph';
+import { readFileSync, existsSync } from 'node:fs';
 import type { SymbolType } from '../types/symbol.js';
 import {
     extractFunctionMeta,
@@ -243,11 +243,18 @@ export async function indexProject(
 
     // 处理 TS/TSX 文件
     if (tsFiles.length > 0) {
-        const project = new Project({
-            tsConfigFilePath: join(projectRoot, 'tsconfig.json'),
+        const tsConfigPath = join(projectRoot, 'tsconfig.json');
+        const projectOptions: Partial<ProjectOptions> = {
             skipAddingFilesFromTsConfig: true,
             skipFileDependencyResolution: true,
-        });
+        };
+
+        // 只在 tsconfig.json 存在时传入，否则使用默认配置
+        if (existsSync(tsConfigPath)) {
+            projectOptions.tsConfigFilePath = tsConfigPath;
+        }
+
+        const project = new Project(projectOptions);
 
         project.addSourceFilesAtPaths(tsFiles);
 
