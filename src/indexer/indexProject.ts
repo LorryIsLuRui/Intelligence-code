@@ -234,6 +234,7 @@ export async function indexProject(
     const ignore = [...DEFAULT_IGNORE, ...(opts.ignore ?? [])];
     console.error(`[indexProject] patterns: ${patterns.join(', ')}`);
     const files = await fg(patterns, {
+        // 根据pattern收集文件列表，支持绝对路径和相对路径（相对于projectRoot），并自动排除node_modules、dist等常见目录。
         absolute: true,
         ignore,
         onlyFiles: true,
