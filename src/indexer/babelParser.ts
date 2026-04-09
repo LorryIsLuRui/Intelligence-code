@@ -522,25 +522,40 @@ function extractHooksFromBody(fn: bt.FunctionDeclaration): string[] {
 /**
  * 获取节点的文本表示（通过 AST 节点属性构建）
  */
-function getNodeText(n: bt.Statement): string;
-function getNodeText(n: bt.Expression): string;
-function getNodeText(n: bt.Node): string {
-    if (bt.isMemberExpression(n)) {
-        const obj = getNodeText(n.object as bt.Expression);
-        const prop = bt.isIdentifier(n.property) ? n.property.name : (bt.isLiteral(n.property) ? String(n.property.value) : '');
-        return obj + (n.computed ? `[${prop}]` : `.${prop}`);
+function getNodeText(n: unknown): string {
+    const node = n as Record<string, unknown>;
+    if (!node || typeof node !== 'object') return '';
+
+    const type = node.type as string | undefined;
+    if (type === 'MemberExpression' || type === 'OptionalMemberExpression') {
+        const obj = getNodeText((node as Record<string, unknown>).object);
+        const propNode = (node as Record<string, unknown>).property;
+        let prop = '';
+        if (propNode && typeof propNode === 'object') {
+            const propType = (propNode as Record<string, unknown>).type;
+            if (propType === 'Identifier') {
+                prop = (propNode as Record<string, unknown>).name as string || '';
+            } else if (propType === 'Literal') {
+                prop = String((propNode as Record<string, unknown>).value ?? '');
+            }
+        }
+        const computed = node.computed;
+        return obj + (computed ? `[${prop}]` : `.${prop}`);
     }
-    if (bt.isIdentifier(n)) {
-        return n.name;
+    if (type === 'Identifier') {
+        return node.name as string || '';
     }
-    if (bt.isLiteral(n)) {
-        return String(n.value);
+    if (type === 'Literal' || type === 'NullLiteral') {
+        const val = node.value;
+        return val === null ? 'null' : String(val);
     }
-    if (bt.isCallExpression(n)) {
-        return getNodeText(n.callee as bt.Expression) + '(...)';
+    if (type === 'CallExpression' || type === 'OptionalCallExpression') {
+        const callee = getNodeText((node as Record<string, unknown>).callee);
+        return callee + '(...)';
     }
-    if (bt.isAssignmentExpression(n)) {
-        return getNodeText(n.left) + ' = ...';
+    if (type === 'AssignmentExpression') {
+        const left = getNodeText((node as Record<string, unknown>).left);
+        return left + ' = ...';
     }
     return '';
 }
@@ -619,7 +634,7 @@ function extractSideEffects(fn: bt.FunctionDeclaration): SideEffectType[] {
 
         // 4. 存储操作
         if (bt.isCallExpression(n)) {
-            const text = getNodeText(n as bt.Statement as bt.Expression);
+            const text = getNodeText(n);
             if (
                 text.includes('localStorage') ||
                 text.includes('sessionStorage') ||
@@ -643,7 +658,7 @@ function extractSideEffects(fn: bt.FunctionDeclaration): SideEffectType[] {
             }
         }
         if (bt.isCallExpression(n) && n.callee) {
-            const calleeText = getNodeText(n.callee as bt.Expression);
+            const calleeText = getNodeText(n.callee);
             for (const param of paramNames) {
                 if (
                     calleeText.startsWith(`${param}.`) ||
