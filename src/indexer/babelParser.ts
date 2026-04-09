@@ -5,7 +5,10 @@ import * as babelParser from '@babel/parser';
 import * as bt from '@babel/types';
 import type { SymbolType } from '../types/symbol.js';
 import type { IndexedSymbolRow } from './indexProject.js';
-import { getRelativePathForDisplay, inferCategoryFromPath } from './heuristics.js';
+import {
+    getRelativePathForDisplay,
+    inferCategoryFromPath,
+} from './heuristics.js';
 
 /** 从 JS 文件内容解析导出的代码块 */
 export function parseJsFile(
@@ -51,7 +54,12 @@ export function parseJsFile(
     // 第二轮：如果没有任何导出，则扫描所有函数/类
     if (out.length === 0) {
         for (const stmt of ast.program.body) {
-            const rows = scanAllDeclarations(stmt, filePath, isJsx, projectRoot);
+            const rows = scanAllDeclarations(
+                stmt,
+                filePath,
+                isJsx,
+                projectRoot
+            );
             out.push(...rows);
         }
     }
@@ -76,7 +84,15 @@ function processStatement(
         if (bt.isFunctionDeclaration(decl)) {
             const name = decl.id?.name;
             if (name) {
-                out.push(createRowFromFunction(name, decl, filePath, projectRoot, isJsx));
+                out.push(
+                    createRowFromFunction(
+                        name,
+                        decl,
+                        filePath,
+                        projectRoot,
+                        isJsx
+                    )
+                );
             }
         } else if (bt.isClassDeclaration(decl)) {
             const name = decl.id?.name;
@@ -85,12 +101,28 @@ function processStatement(
             }
         } else if (bt.isVariableDeclaration(decl)) {
             for (const declarator of decl.declarations) {
-                if (bt.isVariableDeclarator(declarator) && declarator.id && bt.isIdentifier(declarator.id)) {
+                if (
+                    bt.isVariableDeclarator(declarator) &&
+                    declarator.id &&
+                    bt.isIdentifier(declarator.id)
+                ) {
                     const name = declarator.id.name;
                     const init = declarator.init;
-                    if (name && (bt.isArrowFunctionExpression(init) || bt.isFunctionExpression(init))) {
+                    if (
+                        name &&
+                        (bt.isArrowFunctionExpression(init) ||
+                            bt.isFunctionExpression(init))
+                    ) {
                         const fnDecl = arrowToFunction(name, init);
-                        out.push(createRowFromFunction(name, fnDecl, filePath, projectRoot, isJsx));
+                        out.push(
+                            createRowFromFunction(
+                                name,
+                                fnDecl,
+                                filePath,
+                                projectRoot,
+                                isJsx
+                            )
+                        );
                     }
                 }
             }
@@ -99,39 +131,100 @@ function processStatement(
     // 处理 module.exports = xxx
     else if (bt.isExpressionStatement(stmt)) {
         const expr = stmt.expression;
-        if (bt.isAssignmentExpression(expr) && bt.isMemberExpression(expr.left)) {
+        if (
+            bt.isAssignmentExpression(expr) &&
+            bt.isMemberExpression(expr.left)
+        ) {
             const left = expr.left;
             // module.exports = xxx
-            if (bt.isIdentifier(left.object) && left.object.name === 'module' &&
-                bt.isIdentifier(left.property) && left.property.name === 'exports') {
+            if (
+                bt.isIdentifier(left.object) &&
+                left.object.name === 'module' &&
+                bt.isIdentifier(left.property) &&
+                left.property.name === 'exports'
+            ) {
                 const right = expr.right;
                 if (bt.isObjectExpression(right)) {
                     for (const prop of right.properties) {
-                        if (bt.isObjectProperty(prop) && bt.isIdentifier(prop.key)) {
+                        if (
+                            bt.isObjectProperty(prop) &&
+                            bt.isIdentifier(prop.key)
+                        ) {
                             const name = prop.key.name;
                             const value = prop.value;
-                            if (bt.isFunctionExpression(value) || bt.isArrowFunctionExpression(value)) {
-                                const fnDecl = arrowToFunction(name, bt.isArrowFunctionExpression(value) ? value : value);
-                                out.push(createRowFromFunction(name, fnDecl, filePath, projectRoot, isJsx));
+                            if (
+                                bt.isFunctionExpression(value) ||
+                                bt.isArrowFunctionExpression(value)
+                            ) {
+                                const fnDecl = arrowToFunction(
+                                    name,
+                                    bt.isArrowFunctionExpression(value)
+                                        ? value
+                                        : value
+                                );
+                                out.push(
+                                    createRowFromFunction(
+                                        name,
+                                        fnDecl,
+                                        filePath,
+                                        projectRoot,
+                                        isJsx
+                                    )
+                                );
                             }
                         }
                     }
                 } else if (bt.isFunctionExpression(right)) {
                     const fnDecl = arrowToFunction('default', right);
-                    out.push(createRowFromFunction('default', fnDecl, filePath, projectRoot, isJsx));
+                    out.push(
+                        createRowFromFunction(
+                            'default',
+                            fnDecl,
+                            filePath,
+                            projectRoot,
+                            isJsx
+                        )
+                    );
                 } else if (bt.isArrowFunctionExpression(right)) {
                     const fnDecl = arrowToFunction('default', right);
-                    out.push(createRowFromFunction('default', fnDecl, filePath, projectRoot, isJsx));
+                    out.push(
+                        createRowFromFunction(
+                            'default',
+                            fnDecl,
+                            filePath,
+                            projectRoot,
+                            isJsx
+                        )
+                    );
                 }
             }
             // exports.xxx = xxx
-            else if (bt.isIdentifier(left.object) && left.object.name === 'exports') {
-                const name = bt.isIdentifier(left.property) ? left.property.name : null;
+            else if (
+                bt.isIdentifier(left.object) &&
+                left.object.name === 'exports'
+            ) {
+                const name = bt.isIdentifier(left.property)
+                    ? left.property.name
+                    : null;
                 if (name) {
                     const right = expr.right;
-                    if (bt.isFunctionExpression(right) || bt.isArrowFunctionExpression(right)) {
-                        const fnDecl = arrowToFunction(name, bt.isArrowFunctionExpression(right) ? right : right);
-                        out.push(createRowFromFunction(name, fnDecl, filePath, projectRoot, isJsx));
+                    if (
+                        bt.isFunctionExpression(right) ||
+                        bt.isArrowFunctionExpression(right)
+                    ) {
+                        const fnDecl = arrowToFunction(
+                            name,
+                            bt.isArrowFunctionExpression(right) ? right : right
+                        );
+                        out.push(
+                            createRowFromFunction(
+                                name,
+                                fnDecl,
+                                filePath,
+                                projectRoot,
+                                isJsx
+                            )
+                        );
                     }
                 }
             }
@@ -142,16 +235,34 @@ function processStatement(
         const decl = stmt.declaration;
         if (bt.isFunctionDeclaration(decl)) {
             const name = decl.id?.name || 'default';
-            out.push(createRowFromFunction(name, decl, filePath, projectRoot, isJsx));
+            out.push(
+                createRowFromFunction(name, decl, filePath, projectRoot, isJsx)
+            );
         } else if (bt.isClassDeclaration(decl)) {
             const name = decl.id?.name || 'default';
             out.push(createRowFromClass(name, decl, filePath, projectRoot));
         } else if (bt.isArrowFunctionExpression(decl)) {
             const fnDecl = arrowToFunction('default', decl);
-            out.push(createRowFromFunction('default', fnDecl, filePath, projectRoot, isJsx));
+            out.push(
+                createRowFromFunction(
+                    'default',
+                    fnDecl,
+                    filePath,
+                    projectRoot,
+                    isJsx
+                )
+            );
         } else if (bt.isFunctionExpression(decl)) {
             const fnDecl = arrowToFunction('default', decl);
-            out.push(createRowFromFunction('default', fnDecl, filePath, projectRoot, isJsx));
+            out.push(
+                createRowFromFunction(
+                    'default',
+                    fnDecl,
+                    filePath,
+                    projectRoot,
+                    isJsx
+                )
+            );
         }
     }
 
@@ -171,7 +282,9 @@ function scanAllDeclarations(
     if (bt.isFunctionDeclaration(stmt)) {
         const name = stmt.id?.name;
         if (name) {
-            out.push(createRowFromFunction(name, stmt, filePath, projectRoot, isJsx));
+            out.push(
+                createRowFromFunction(name, stmt, filePath, projectRoot, isJsx)
+            );
         }
     }
     // 类声明: class Foo {}
@@ -184,12 +297,28 @@ function scanAllDeclarations(
     // 变量声明: const foo = () => {}, const bar = function() {}
     else if (bt.isVariableDeclaration(stmt)) {
         for (const declarator of stmt.declarations) {
-            if (bt.isVariableDeclarator(declarator) && declarator.id && bt.isIdentifier(declarator.id)) {
+            if (
+                bt.isVariableDeclarator(declarator) &&
+                declarator.id &&
+                bt.isIdentifier(declarator.id)
+            ) {
                 const name = declarator.id.name;
                 const init = declarator.init;
-                if (name && (bt.isArrowFunctionExpression(init) || bt.isFunctionExpression(init))) {
+                if (
+                    name &&
+                    (bt.isArrowFunctionExpression(init) ||
+                        bt.isFunctionExpression(init))
+                ) {
                     const fnDecl = arrowToFunction(name, init);
-                    out.push(createRowFromFunction(name, fnDecl, filePath, projectRoot, isJsx));
+                    out.push(
+                        createRowFromFunction(
+                            name,
+                            fnDecl,
+                            filePath,
+                            projectRoot,
+                            isJsx
+                        )
+                    );
                 }
             }
         }
@@ -304,7 +433,17 @@ function containsJsx(node: bt.Node): boolean {
             return;
         }
         // 只遍历常见的包含子节点的属性
-        const keys = ['body', 'declarations', 'arguments', 'callee', 'init', 'left', 'right', 'consequent', 'alternate'];
+        const keys = [
+            'body',
+            'declarations',
+            'arguments',
+            'callee',
+            'init',
+            'left',
+            'right',
+            'consequent',
+            'alternate',
+        ];
         for (const key of keys) {
             const val = (n as unknown as Record<string, unknown>)[key];
             if (Array.isArray(val)) {
@@ -381,6 +520,32 @@ function extractHooksFromBody(fn: bt.FunctionDeclaration): string[] {
 }
 
 /**
+ * 获取节点的文本表示（通过 AST 节点属性构建）
+ */
+function getNodeText(n: bt.Statement): string;
+function getNodeText(n: bt.Expression): string;
+function getNodeText(n: bt.Node): string {
+    if (bt.isMemberExpression(n)) {
+        const obj = getNodeText(n.object as bt.Expression);
+        const prop = bt.isIdentifier(n.property) ? n.property.name : (bt.isLiteral(n.property) ? String(n.property.value) : '');
+        return obj + (n.computed ? `[${prop}]` : `.${prop}`);
+    }
+    if (bt.isIdentifier(n)) {
+        return n.name;
+    }
+    if (bt.isLiteral(n)) {
+        return String(n.value);
+    }
+    if (bt.isCallExpression(n)) {
+        return getNodeText(n.callee as bt.Expression) + '(...)';
+    }
+    if (bt.isAssignmentExpression(n)) {
+        return getNodeText(n.left) + ' = ...';
+    }
+    return '';
+}
+
+/**
  * 静态分析函数体的副作用
  */
 function extractSideEffects(fn: bt.FunctionDeclaration): SideEffectType[] {
@@ -397,7 +562,10 @@ function extractSideEffects(fn: bt.FunctionDeclaration): SideEffectType[] {
     visitNodes(body, (n) => {
         // 1. 网络请求
         if (bt.isCallExpression(n)) {
-            const calleeText = n.callee && 'name' in n.callee ? (n.callee as bt.Identifier).name : '';
+            const calleeText =
+                n.callee && 'name' in n.callee
+                    ? (n.callee as bt.Identifier).name
+                    : '';
             const calleeTextLower = calleeText.toLowerCase();
             if (
                 calleeTextLower === 'fetch' ||
@@ -416,7 +584,10 @@ function extractSideEffects(fn: bt.FunctionDeclaration): SideEffectType[] {
 
         // 2. 计时器
         if (bt.isCallExpression(n)) {
-            const calleeName = n.callee && 'name' in n.callee ? (n.callee as bt.Identifier).name : '';
+            const calleeName =
+                n.callee && 'name' in n.callee
+                    ? (n.callee as bt.Identifier).name
+                    : '';
             if (
                 calleeName === 'setTimeout' ||
                 calleeName === 'setInterval' ||
@@ -429,14 +600,18 @@ function extractSideEffects(fn: bt.FunctionDeclaration): SideEffectType[] {
 
         // 3. DOM/全局对象操作
         if (bt.isExpressionStatement(n)) {
-            const text = n.getText();
+            const text = getNodeText(n.expression);
             if (
                 /\bdocument\.\w+/.test(text) ||
                 /\bwindow\.\w+/.test(text) ||
                 /\bnavigator\.\w+/.test(text) ||
                 /\blocation\.\w+/.test(text)
             ) {
-                if (/=/.test(text) && !text.includes('===') && !text.includes('==')) {
+                if (
+                    /=/.test(text) &&
+                    !text.includes('===') &&
+                    !text.includes('==')
+                ) {
                     effects.add('dom');
                 }
             }
@@ -444,7 +619,7 @@ function extractSideEffects(fn: bt.FunctionDeclaration): SideEffectType[] {
 
         // 4. 存储操作
         if (bt.isCallExpression(n)) {
-            const text = n.getText();
+            const text = getNodeText(n as bt.Statement as bt.Expression);
             if (
                 text.includes('localStorage') ||
                 text.includes('sessionStorage') ||
@@ -456,20 +631,30 @@ function extractSideEffects(fn: bt.FunctionDeclaration): SideEffectType[] {
 
         // 5. 入参修改
         if (bt.isAssignmentExpression(n)) {
-            const leftText = n.left.getText();
+            const leftText = getNodeText(n.left);
             for (const param of paramNames) {
-                if (leftText.startsWith(`${param}.`) || leftText.startsWith(`${param}[`)) {
+                if (
+                    leftText.startsWith(`${param}.`) ||
+                    leftText.startsWith(`${param}[`)
+                ) {
                     effects.add('mutation');
                     break;
                 }
             }
         }
         if (bt.isCallExpression(n) && n.callee) {
-            const calleeText = n.callee.getText();
+            const calleeText = getNodeText(n.callee as bt.Expression);
             for (const param of paramNames) {
-                if (calleeText.startsWith(`${param}.`) || calleeText.startsWith(`${param}[`)) {
+                if (
+                    calleeText.startsWith(`${param}.`) ||
+                    calleeText.startsWith(`${param}[`)
+                ) {
                     // 检测 push/pop/splice 等 mutations
-                    if (/\.(push|pop|shift|unshift|splice|sort|reverse|fill)\(/.test(calleeText)) {
+                    if (
+                        /\.(push|pop|shift|unshift|splice|sort|reverse|fill)\(/.test(
+                            calleeText
+                        )
+                    ) {
                         effects.add('mutation');
                         break;
                     }
