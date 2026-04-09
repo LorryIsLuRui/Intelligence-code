@@ -1,28 +1,39 @@
 #!/usr/bin/env node
 /**
  * Phase 2 CLI：扫描代码库并写入 MySQL `symbols`（需 `MYSQL_ENABLED=true`）。
+ *
+ * 环境变量加载顺序：
+ * 1. 命令行参数（最高优先级）
+ * 2. INDEX_ROOT 指向的第三方项目 .env（中等优先级，优先使用第三方显式设置的值）
+ * 3. 本地的 .env（最低优先级，提供默认值）
  */
 import { resolve } from 'node:path';
-import dotenv from 'dotenv';
+import { loadProjectDotenv } from '../config/env.js';
 import { runReindex } from '../services/reindex.js';
 
-dotenv.config();
-
 /**
- * 入口：校验环境 → 连接池 → 按 `INDEX_*` 调用 `indexProject` → `upsertSymbols`。
- * 进度与统计输出到 **stderr**，避免占用 stdout（与 MCP 混用时更安全）。
+ * 入口：加载第三方 .env → 校验环境 → 调用 runReindex。
+ * 进度与统计输出到 **stderr**，避免占用 stdout。
  * 进程退出码：成功 `0`，无 MySQL 或异常 `1`。
  */
 async function main() {
     const projectRoot = resolve(process.env.INDEX_ROOT ?? process.cwd());
+    loadProjectDotenv(projectRoot);
+    console.error(
+        `[index] MYSQL_ENABLED=${process.env.MYSQL_ENABLED}, ` +
+            `MYSQL_HOST=${process.env.MYSQL_HOST}` +
+            `[index] projectRoot=${projectRoot}`
+    );
+
     const globPatterns = process.env.INDEX_GLOB
-        ? process.env.INDEX_GLOB.split(/\s+/).map((s) => s.trim()).filter(Boolean)
+        ? process.env.INDEX_GLOB.split(/\s+/)
+              .map((s) => s.trim())
+              .filter(Boolean)
         : undefined;
     const ignore = process.env.INDEX_IGNORE
         ? process.env.INDEX_IGNORE.split(',').map((s) => s.trim())
         : undefined;
 
-    console.error(`[index] projectRoot=${projectRoot}`);
     const result = await runReindex({
         projectRoot,
         globPatterns,

@@ -1,5 +1,5 @@
 import { resolve } from 'node:path';
-import { env, validateEnv } from '../config/env.js';
+import { env, loadProjectDotenv } from '../config/env.js';
 import { getMySqlPool } from '../db/mysql.js';
 import { indexedRowToEmbedText } from '../indexer/embedText.js';
 import { indexProject } from '../indexer/indexProject.js';
@@ -27,17 +27,36 @@ export interface ReindexResult {
 export async function runReindex(
     options: ReindexOptions = {}
 ): Promise<ReindexResult> {
-    validateEnv();
-    const pool = getMySqlPool();
-    console.error('[reindex] pool', 'options:', JSON.stringify(options));
-    if (!pool || !env.mysqlEnabled) {
-        console.error('[reindex] pool', pool, env.mysqlEnabled);
-        throw new Error('执行 reindex 前必须开启 MYSQL_ENABLED=true。');
+    const projectRoot = resolve(options.projectRoot ?? process.cwd());
+    const { dryRun = false } = options;
+
+    // 1️ 加载第三方 .env：只覆盖未定义的变量 → 保留 MCP Server 自身配置
+    loadProjectDotenv(projectRoot);
+
+    // 2️ 打印生效的环境变量（便于调试）
+    console.error(
+        `[reindex] projectRoot=${projectRoot}, dryRun=${dryRun}, ` +
+            `MYSQL_ENABLED=${process.env.MYSQL_ENABLED}, ` +
+            `MYSQL_HOST=${process.env.MYSQL_HOST}`
+    );
+
+    // 3️⃣ 只有需要写入数据库时才检查 MySQL 并建立连接
+    // 注意：直接检查 process.env，因为 env.mysqlEnabled 是模块加载时计算的，不会反映 loadProjectDotenv 的更新
+    const mysqlEnabled = process.env.MYSQL_ENABLED === 'true';
+    const embeddingServiceUrl = process.env.EMBEDDING_SERVICE_URL;
+    let pool: Awaited<ReturnType<typeof getMySqlPool>> | null = null;
+    if (!dryRun) {
+        if (!mysqlEnabled) {
+            throw new Error(
+                `最新！${JSON.stringify(process.env)}执行 reindex 写入数据库需要 MYSQL_ENABLED=true。' +
+                    '第三方项目可在 .env 中配置此变量（未配置则使用 MCP Server 本地配置）。`
+            );
+        }
+        pool = getMySqlPool();
+        await pool!.query('SELECT 1'); // 测试连接
+        console.error('[reindex] MySQL connection successful');
     }
 
-    await pool.query('SELECT 1'); // 测试连接，提前捕获常见的连接错误（如拒绝、认证失败、超时等），并给出更友好的提示。
-    console.error('[reindex] MySQL connection successful');
-    const projectRoot = resolve(options.projectRoot ?? process.cwd());
     const rows = await indexProject({
         projectRoot,
         globPatterns: options.globPatterns,
@@ -50,9 +69,9 @@ export async function runReindex(
     let embeddingsComputed = false;
     let embeddingPayload: (number[] | null)[] | undefined;
 
-    if (!options.dryRun && rows.length > 0 && env.embeddingServiceUrl) {
+    if (!options.dryRun && rows.length > 0 && embeddingServiceUrl) {
         try {
-            const client = createEmbeddingClient(env.embeddingServiceUrl);
+            const client = createEmbeddingClient(embeddingServiceUrl);
             const texts = rows.map(indexedRowToEmbedText);
             const vecs = await embedAll(client, texts);
             embeddingPayload = vecs;
@@ -64,7 +83,7 @@ export async function runReindex(
     }
 
     if (!options.dryRun) {
-        await upsertSymbols(pool, rows, embeddingPayload);
+        await upsertSymbols(pool!, rows, embeddingPayload);
     }
 
     return {

@@ -4,7 +4,6 @@ import { fileURLToPath } from 'node:url';
 import { existsSync, readFileSync } from 'node:fs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const projectRoot = path.resolve(__dirname, '../../');
 
 // 解析命令行参数 --key=value 格式，注入到 process.env
 for (const arg of process.argv) {
@@ -14,30 +13,52 @@ for (const arg of process.argv) {
     }
 }
 
-// 加载本地 .env（外部传入的 env 已经在 process.env 中，override: false 不会覆盖它们）
+// MCP Server 本地 .env 路径（固定指向项目根目录）
+const MCP_SERVER_ROOT = path.resolve(__dirname, '..', '..', './dist'); // MCP Server 根目录
+const MCP_SERVER_ENV_PATH = path.resolve(MCP_SERVER_ROOT, '.env');
 dotenv.config({
-    path: path.resolve(projectRoot, '.env'),
-    override: false,
+    path: MCP_SERVER_ENV_PATH,
+    override: false, // 不覆盖已存在的变量
 });
 
-// 尝试从第三方项目目录加载 .env，按变量维度覆盖（只覆盖第三方明确配置的变量）
-const clientProjectRoot = process.env.INDEX_ROOT || process.cwd();
-const clientEnvPath = path.resolve(clientProjectRoot, '.env');
-if (existsSync(clientEnvPath)) {
-    console.error(`[Config] Merging .env from client project root: ${clientProjectRoot}`);
-    // 手动解析第三方 .env，只覆盖其明确配置的变量
-    const clientEnvContent = readFileSync(clientEnvPath, 'utf-8');
-    for (const line of clientEnvContent.split('\n')) {
+/**
+ * 从指定项目根目录加载 .env 到 process.env
+ * 行为：优先使用第三方显式设置的值，否则保留 MCP Server 本地配置
+ */
+export function loadProjectDotenv(projectRoot: string): void {
+    const envPath = path.resolve(projectRoot, '.env');
+    if (!existsSync(envPath)) {
+        return;
+    }
+
+    const content = readFileSync(envPath, 'utf-8');
+
+    // 第一步：收集第三方 .env 中所有显式定义的 key
+    const thirdPartyKeys = new Set<string>();
+    for (const line of content.split('\n')) {
         const trimmed = line.trim();
         if (!trimmed || trimmed.startsWith('#')) continue;
         const eqIdx = trimmed.indexOf('=');
         if (eqIdx === -1) continue;
         const key = trimmed.slice(0, eqIdx).trim();
-        const value = trimmed.slice(eqIdx + 1).trim();
-        // 移除引号
-        const cleanValue = value.replace(/^["']|["']$/g, '');
-        if (key) {
-            process.env[key] = cleanValue;
+        if (!key) continue;
+        thirdPartyKeys.add(key);
+    }
+
+    // 第二步：如果某个 key 是第三方显式定义的，则覆盖（不管值是什么）
+    for (const line of content.split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#')) continue;
+        const eqIdx = trimmed.indexOf('=');
+        if (eqIdx === -1) continue;
+        const key = trimmed.slice(0, eqIdx).trim();
+        let value = trimmed.slice(eqIdx + 1).trim();
+        value = value.replace(/^["']|["']$/g, '');
+        if (!key) continue;
+
+        // 只有当第三方显式定义了这个 key 时才覆盖
+        if (thirdPartyKeys.has(key)) {
+            process.env[key] = value;
         }
     }
 }

@@ -5,17 +5,16 @@
  * 策略：
  * - 只分析 changed files 中可索引的导出代码块
  * - 与库内同 type 的存量代码块做语义相似度（cosine）匹配
- * - 对 component：要求 newProps 是 oldProps 的超集（或至少覆盖大部分）才判定为“重复/可合并”
+ * - 对 component：要求 newProps 是 oldProps 的超集（或至少覆盖大部分）才判定为"重复/可合并"
  *
  * 输出：
  * - duplicate-report.json
  * - duplicate-report.md（中文，适合 PR 评论）
  */
 
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import dotenv from 'dotenv';
-import { env, validateEnv } from '../config/env.js';
+import { env, loadProjectDotenv, validateEnv } from '../config/env.js';
 import { getMySqlPool } from '../db/mysql.js';
 import { indexedRowToEmbedText } from '../indexer/embedText.js';
 import { indexProject } from '../indexer/indexProject.js';
@@ -25,8 +24,6 @@ import {
 } from '../services/embeddingClient.js';
 import { cosineSimilarity } from '../services/vectorMath.js';
 import type { SymbolType } from '../types/symbol.js';
-
-dotenv.config();
 
 type DuplicateLevel = 'blocking' | 'warning';
 
@@ -126,6 +123,34 @@ function escapeMd(text: string) {
 }
 
 async function main() {
+    // 1️ 确定项目根目录
+    const projectRoot = resolve(process.env.INDEX_ROOT ?? process.cwd());
+
+    // 2️ 加载环境变量：先本地默认值，再第三方覆盖
+    const localEnvPath = resolve(process.cwd(), '.env');
+    if (existsSync(localEnvPath)) {
+        const content = readFileSync(localEnvPath, 'utf-8');
+        for (const line of content.split('\n')) {
+            const trimmed = line.trim();
+            if (!trimmed || trimmed.startsWith('#')) continue;
+            const eqIdx = trimmed.indexOf('=');
+            if (eqIdx === -1) continue;
+            const key = trimmed.slice(0, eqIdx).trim();
+            let value = trimmed.slice(eqIdx + 1).trim();
+            value = value.replace(/^["']|["']$/g, '');
+            if (key && process.env[key] === undefined) {
+                process.env[key] = value;
+            }
+        }
+    }
+    loadProjectDotenv(projectRoot);
+
+    console.error(
+        `[duplicate-check] projectRoot=${projectRoot}, ` +
+        `MYSQL_ENABLED=${process.env.MYSQL_ENABLED}`
+    );
+
+    // 3️ 解析命令行参数
     const args = parseArgs(process.argv.slice(2));
     const changedFilesPath = args.get('changed-files') ?? 'changed_files.txt';
     const outJson = args.get('out-json') ?? 'duplicate-report.json';
@@ -167,7 +192,6 @@ async function main() {
     // Type narrowing for TS (pool is guaranteed non-null after guards above)
     const mysqlPool = isMockMode ? null : getMySqlPool();
 
-    const projectRoot = resolve(process.cwd());
     const changed = readLines(changedFilesPath)
         .filter((p) => p.endsWith('.ts') || p.endsWith('.tsx'))
         .filter((p) => !p.includes('/node_modules/') && !p.includes('/dist/'));
