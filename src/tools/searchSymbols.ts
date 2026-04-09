@@ -28,6 +28,7 @@ export function createSearchSymbolsTool(repository: SymbolRepository) {
                 );
                 const resultRows = input.ranked
                     ? rankSemanticHits(hits).map((item) => ({
+                          id: item.symbol.id,
                           name: item.symbol.name,
                           type: item.symbol.type,
                           path: item.symbol.path,
@@ -41,6 +42,7 @@ export function createSearchSymbolsTool(repository: SymbolRepository) {
                           ),
                       }))
                     : hits.map((h) => ({
+                          id: h.symbol.id,
                           name: h.symbol.name,
                           type: h.symbol.type,
                           path: h.symbol.path,
@@ -61,6 +63,7 @@ export function createSearchSymbolsTool(repository: SymbolRepository) {
             const rows = await repository.search(input.query, input.type);
             const resultRows = input.ranked
                 ? rankSymbols(input.query, rows).map((item) => ({
+                      id: item.symbol.id,
                       name: item.symbol.name,
                       type: item.symbol.type,
                       path: item.symbol.path,
@@ -71,6 +74,7 @@ export function createSearchSymbolsTool(repository: SymbolRepository) {
                       reasonDetail: item.reason,
                   }))
                 : rows.map((r) => ({
+                      id: r.id,
                       name: r.name,
                       type: r.type,
                       path: r.path,

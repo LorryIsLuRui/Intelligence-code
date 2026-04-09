@@ -226,6 +226,26 @@ export class SymbolRepository {
         return mapRow(rows[0]);
     }
 
+    /**
+     * 将指定代码块的 usage_count +1，用于用户采纳推荐后记录。
+     */
+    async incUsage(symbolId: number): Promise<boolean> {
+        if (!this.pool) {
+            // 内存模式：找到并 +1
+            const idx = inMemorySymbols.findIndex((s) => s.id === symbolId);
+            if (idx >= 0) {
+                inMemorySymbols[idx].usageCount++;
+                return true;
+            }
+            return false;
+        }
+        const [result] = await this.pool.query(
+            `UPDATE ${env.mysqlSymbolsTable} SET usage_count = usage_count + 1 WHERE id = ?`,
+            [symbolId]
+        );
+        return (result as { affectedRows: number }).affectedRows > 0;
+    }
+
     async searchByStructure(
         fields: string[],
         opts?: { type?: SymbolType; category?: string; limit?: number }

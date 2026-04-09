@@ -5,6 +5,7 @@ import { createSearchSymbolsTool } from "../tools/searchSymbols.js";
 import { createGetSymbolDetailTool } from "../tools/getSymbolDetail.js";
 import { createReindexTool } from "../tools/reindex.js";
 import { createSearchByStructureTool } from "../tools/searchByStructure.js";
+import { createIncUsageTool } from "../tools/incUsage.js";
 
 export function createServer() {
   const server = new McpServer({
@@ -25,6 +26,9 @@ export function createServer() {
 
   const reindexTool = createReindexTool();
   server.tool(reindexTool.name, reindexTool.description, reindexTool.inputSchema, reindexTool.handler);
+
+  const incUsageTool = createIncUsageTool(repository);
+  server.tool(incUsageTool.name, incUsageTool.description, incUsageTool.inputSchema, incUsageTool.handler);
 
   registerReusableCodeAdvisorPrompt(server);
 

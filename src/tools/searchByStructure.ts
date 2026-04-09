@@ -26,6 +26,7 @@ export function createSearchByStructureTool(repository: SymbolRepository) {
             const query = input.fields.join(' ');
             const resultRows = input.ranked
                 ? rankSymbols(query, rows).map((item) => ({
+                      id: item.symbol.id,
                       name: item.symbol.name,
                       type: item.symbol.type,
                       category: item.symbol.category,
@@ -38,6 +39,7 @@ export function createSearchByStructureTool(repository: SymbolRepository) {
                       meta: item.symbol.meta,
                   }))
                 : rows.map((r) => ({
+                      id: r.id,
                       name: r.name,
                       type: r.type,
                       category: r.category,
