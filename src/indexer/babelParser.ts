@@ -250,6 +250,9 @@ function createRowFromFunction(
         .filter((p): p is bt.Identifier => bt.isIdentifier(p))
         .map((p) => p.name);
 
+    const hooks = extractHooksFromBody(decl);
+    const sideEffects = extractSideEffects(decl);
+
     return {
         name,
         type,
@@ -258,8 +261,11 @@ function createRowFromFunction(
         description: null,
         content: `function ${decl.id?.name || 'anonymous'}(${params.join(', ')}) { ... }`,
         meta: {
+            kind: 'function',
             params,
             returnType: getReturnType(decl),
+            ...(hooks.length ? { hooks } : {}),
+            ...(sideEffects.length ? { sideEffects } : {}),
         },
     };
 }
@@ -331,4 +337,146 @@ function getReturnType(fn: bt.FunctionDeclaration): string | undefined {
         if (bt.isTSNullKeyword(inner)) return 'null';
     }
     return undefined;
+}
+
+/** 副作用类型 */
+type SideEffectType = 'network' | 'timer' | 'dom' | 'storage' | 'mutation';
+
+/**
+ * 遍历 Babel AST 节点，收集所有满足条件的回调
+ */
+function visitNodes(node: bt.Node, callback: (n: bt.Node) => void): void {
+    callback(node);
+    for (const key of Object.keys(node)) {
+        const val = (node as unknown as Record<string, unknown>)[key];
+        if (Array.isArray(val)) {
+            for (const v of val) {
+                if (v && typeof v === 'object' && 'type' in v) {
+                    visitNodes(v as bt.Node, callback);
+                }
+            }
+        } else if (val && typeof val === 'object' && 'type' in val) {
+            visitNodes(val as bt.Node, callback);
+        }
+    }
+}
+
+/**
+ * 从函数体中提取 React Hooks（use 开头的函数调用）
+ */
+function extractHooksFromBody(fn: bt.FunctionDeclaration): string[] {
+    const seen = new Set<string>();
+    const body = fn.body;
+    if (!body || !bt.isBlockStatement(body)) return [];
+
+    visitNodes(body, (n) => {
+        if (bt.isCallExpression(n)) {
+            const callee = n.callee;
+            if (bt.isIdentifier(callee) && callee.name.startsWith('use')) {
+                seen.add(callee.name);
+            }
+        }
+    });
+    return [...seen].sort();
+}
+
+/**
+ * 静态分析函数体的副作用
+ */
+function extractSideEffects(fn: bt.FunctionDeclaration): SideEffectType[] {
+    const effects = new Set<SideEffectType>();
+    const body = fn.body;
+    if (!body || !bt.isBlockStatement(body)) return [];
+
+    const paramNames = new Set(
+        fn.params
+            .filter((p): p is bt.Identifier => bt.isIdentifier(p))
+            .map((p) => p.name)
+    );
+
+    visitNodes(body, (n) => {
+        // 1. 网络请求
+        if (bt.isCallExpression(n)) {
+            const calleeText = n.callee && 'name' in n.callee ? (n.callee as bt.Identifier).name : '';
+            const calleeTextLower = calleeText.toLowerCase();
+            if (
+                calleeTextLower === 'fetch' ||
+                calleeTextLower === 'axios' ||
+                calleeTextLower === 'xhr' ||
+                calleeTextLower === 'ajax' ||
+                calleeText.startsWith('axios.') ||
+                calleeTextLower.includes('request')
+            ) {
+                effects.add('network');
+            }
+            if (calleeTextLower.includes('xmlhttprequest')) {
+                effects.add('network');
+            }
+        }
+
+        // 2. 计时器
+        if (bt.isCallExpression(n)) {
+            const calleeName = n.callee && 'name' in n.callee ? (n.callee as bt.Identifier).name : '';
+            if (
+                calleeName === 'setTimeout' ||
+                calleeName === 'setInterval' ||
+                calleeName === 'requestAnimationFrame' ||
+                calleeName === 'setImmediate'
+            ) {
+                effects.add('timer');
+            }
+        }
+
+        // 3. DOM/全局对象操作
+        if (bt.isExpressionStatement(n)) {
+            const text = n.getText();
+            if (
+                /\bdocument\.\w+/.test(text) ||
+                /\bwindow\.\w+/.test(text) ||
+                /\bnavigator\.\w+/.test(text) ||
+                /\blocation\.\w+/.test(text)
+            ) {
+                if (/=/.test(text) && !text.includes('===') && !text.includes('==')) {
+                    effects.add('dom');
+                }
+            }
+        }
+
+        // 4. 存储操作
+        if (bt.isCallExpression(n)) {
+            const text = n.getText();
+            if (
+                text.includes('localStorage') ||
+                text.includes('sessionStorage') ||
+                text.includes('cookie')
+            ) {
+                effects.add('storage');
+            }
+        }
+
+        // 5. 入参修改
+        if (bt.isAssignmentExpression(n)) {
+            const leftText = n.left.getText();
+            for (const param of paramNames) {
+                if (leftText.startsWith(`${param}.`) || leftText.startsWith(`${param}[`)) {
+                    effects.add('mutation');
+                    break;
+                }
+            }
+        }
+        if (bt.isCallExpression(n) && n.callee) {
+            const calleeText = n.callee.getText();
+            for (const param of paramNames) {
+                if (calleeText.startsWith(`${param}.`) || calleeText.startsWith(`${param}[`)) {
+                    // 检测 push/pop/splice 等 mutations
+                    if (/\.(push|pop|shift|unshift|splice|sort|reverse|fill)\(/.test(calleeText)) {
+                        effects.add('mutation');
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    return [...effects].sort();
 }

@@ -102,6 +102,7 @@ export function extractFunctionMeta(
     const returnType = extractReturnTypeText(fn);
     const sideEffects = extractSideEffects(fn);
     return {
+        kind: 'function',
         params,
         ...(paramTypeFields.length ? { paramTypeFields } : {}),
         ...(hooks.length ? { hooks } : {}),
@@ -136,6 +137,7 @@ export function extractInterfaceOrTypeMeta(
     if (Node.isTypeAliasDeclaration(node)) {
         return { kind: 'typeAlias' };
     }
+    // 其他类型（如 enum）暂不处理，标记为 unknown 以供后续扩展。
     return { kind: 'unknown' };
 }
 
@@ -151,9 +153,7 @@ export type SideEffectType =
  * 静态分析函数体的副作用。
  * @returns 副作用类型数组，去重排序后写入 `meta.sideEffects`。
  */
-export function extractSideEffects(
-    node: Node
-): SideEffectType[] {
+export function extractSideEffects(node: Node): SideEffectType[] {
     const effects = new Set<SideEffectType>();
 
     // 1. 检测网络请求
@@ -206,7 +206,11 @@ export function extractSideEffects(
                 /\blocation\.\w+/.test(text)
             ) {
                 // 区分读取和写入
-                if (/=/.test(text) && !text.includes('===') && !text.includes('==')) {
+                if (
+                    /=/.test(text) &&
+                    !text.includes('===') &&
+                    !text.includes('==')
+                ) {
                     effects.add('dom');
                 }
             }
@@ -229,11 +233,12 @@ export function extractSideEffects(
 
     // 5. 检测入参修改（检测 mutation pattern）
     // 如 props.items.push(...), obj.x = ...
-    const params = node.getKind() === SyntaxKind.FunctionDeclaration
-        ? (node as FunctionDeclaration).getParameters()
-        : node.getKind() === SyntaxKind.ArrowFunction
-            ? (node as ArrowFunction).getParameters()
-            : node.getKind() === SyntaxKind.FunctionExpression
+    const params =
+        node.getKind() === SyntaxKind.FunctionDeclaration
+            ? (node as FunctionDeclaration).getParameters()
+            : node.getKind() === SyntaxKind.ArrowFunction
+              ? (node as ArrowFunction).getParameters()
+              : node.getKind() === SyntaxKind.FunctionExpression
                 ? (node as FunctionExpression).getParameters()
                 : [];
 
@@ -244,7 +249,10 @@ export function extractSideEffects(
                 const text = n.getText();
                 // 检测 param.x = ... 或 param.push/pop/splice 等
                 for (const param of paramNames) {
-                    if (text.includes(`${param}.`) || text.startsWith(`${param} =`)) {
+                    if (
+                        text.includes(`${param}.`) ||
+                        text.startsWith(`${param} =`)
+                    ) {
                         effects.add('mutation');
                         break;
                     }

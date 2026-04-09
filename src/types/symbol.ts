@@ -3,7 +3,7 @@ export type SymbolType = 'component' | 'util' | 'selector' | 'type';
 export interface CodeSymbol {
     id: number;
     name: string;
-    type: SymbolType;
+    type: SymbolType; // component/util{包括class}/selector/type{type和interface都是这个类型，区别在meta里}
     category: string | null;
     path: string;
     description: string | null;
