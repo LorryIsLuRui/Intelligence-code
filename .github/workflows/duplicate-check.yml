@@ -1,16 +1,11 @@
-# 没有服务器，先mock
-# 这个 workflow 在 PR 创建或更新时触发，执行以下步骤：
-# 1. 拉取代码并安装依赖
-# 2. 可选：启动本地 embedding service（如果你不想在 CI 内启动，也可以依赖远端服务，直接把 URL 写到 secrets 并删掉下面相关步骤）
-# 3. 计算变更文件列表
-# 4. 运行重复检测脚本，生成报告
-# 5. 上传报告作为 artifact（以供下载）
-# 6. 在 PR 下发表评论，展示检测结果（如果报告过大或有敏感信息，也可以只发个简短消息并引导 reviewer 下载 artifact 查看详细报告）
+# 方式一：直接内联（保留原有用法）
+# 方式二：使用 Action（推荐）
+# 见 .github/actions/code-intelligence-check/README.md
 
 name: 重复实现检测
 
 on:
-    push: # 只要执行 git push，就会触发 workflow
+    push:
         branches:
             - main
     pull_request:
@@ -26,129 +21,13 @@ concurrency:
 jobs:
     duplicate-check:
         runs-on: ubuntu-latest
-        env:
-            # 阈值（可在仓库/组织 Secrets 或 workflow_dispatch 再做参数化）
-            DUPLICATE_BLOCK_THRESHOLD: '0.95'
-            DUPLICATE_WARN_THRESHOLD: '0.85'
-
-            # MySQL（建议放 secrets）
-            # MYSQL_ENABLED: 'true'
-            # MYSQL_HOST: ${{ secrets.MYSQL_HOST }}
-            # MYSQL_PORT: ${{ secrets.MYSQL_PORT }}
-            # MYSQL_USER: ${{ secrets.MYSQL_USER }}
-            # MYSQL_PASSWORD: ${{ secrets.MYSQL_PASSWORD }}
-            # MYSQL_DATABASE: ${{ secrets.MYSQL_DATABASE }}
-
-            # embedding service（如你想依赖远端服务，可直接把 URL 写到 secrets 并删掉下面“启动服务”步骤）
-            # EMBEDDING_SERVICE_URL: 'http://127.0.0.1:8765'
-        permissions:
-            contents: write # 允许向 Commit 发表评论
-            pull-requests: write # 允许向 Pull Request 发表评论
-
         steps:
-            - name: 拉取代码
-              uses: actions/checkout@v4
-              with:
-                  fetch-depth: 0
-
-            - name: 安装 Node
-              uses: actions/setup-node@v4
-              with:
-                  node-version: '20'
-                  cache: 'npm'
-
-            - name: 安装依赖
-              run: npm ci
-
-            # # ---- 可选：启动本地 embedding service（在 CI 内现拉模型较慢；企业建议用镜像缓存或远端服务）----
-            # - name: 安装 Python
-            #   uses: actions/setup-python@v5
+            # 推荐：使用封装好的 Action（需要发布后使用）
+            # - uses: lorrylurui/code-intelligence-check@v1
             #   with:
-            #       python-version: '3.11'
+            #     is-mock-mode: 'true'
 
-            # - name: 启动 embedding service（可选）
-            #   run: |
-            #       python -m pip install --upgrade pip
-            #       pip install -r embedding-service/requirements.txt
-            #       python -m uvicorn embedding-service.app:app --host 127.0.0.1 --port 8765 &
-            #       for i in {1..30}; do
-            #         if curl -sf http://127.0.0.1:8765/health > /dev/null; then
-            #           echo "embedding service ready"
-            #           exit 0
-            #         fi
-            #         sleep 1
-            #       done
-            #       echo "embedding service not ready"
-            #       exit 1
-
-            - name: 计算变更文件列表
-              run: |
-                  # PR 场景：对比 base_ref；push 场景：对比上一 commit
-                  if [ "${{ github.event_name }}" = "pull_request" ] && [ -n "${{ github.base_ref }}" ]; then
-                    git fetch origin ${{ github.base_ref }} --depth=1
-                    git diff --name-only origin/${{ github.base_ref }}...HEAD > changed_files.txt
-                  else
-                    # push 或无 base_ref 时，检测本次 push 涉及的文件
-                    git diff --name-only HEAD~1 HEAD > changed_files.txt 2>/dev/null || echo "" > changed_files.txt
-                  fi
-                  echo "Changed files:"
-                  cat changed_files.txt
-
-            - name: 运行重复检测脚本
-              run: |
-                  npm run detect-duplicates -- \
-                    --changed-files changed_files.txt \
-                    --out-json duplicate-report.json \
-                    --out-md duplicate-report.md \
-                    --block-threshold $DUPLICATE_BLOCK_THRESHOLD \
-                    --warn-threshold $DUPLICATE_WARN_THRESHOLD \
-                    --is-mock-mode true
-
-            - name: 上传报告（artifact）
-              if: always()
-              uses: actions/upload-artifact@v4
+            # 内联用法（当前项目直接使用）
+            - uses: ./.github/actions/code-intelligence-check
               with:
-                  name: duplicate-check-report
-                  path: |
-                      duplicate-report.json
-                      duplicate-report.md
-                      changed_files.txt
-
-            - name: PR 或 Commit 评论
-              if: always()
-              env:
-                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-              run: |
-                  # 1. 准备评论内容
-                  if [ -f duplicate-report.md ]; then
-                    BODY="$(cat duplicate-report.md)"
-                  else
-                    BODY="## 重复实现检测（CI）
-                    
-                    未生成报告文件（duplicate-report.md）。"
-                  fi
-
-                  # 2. 分场景处理评论逻辑
-                  if [ "${{ github.event_name }}" = "pull_request" ]; then
-                    echo "检测到 PR 事件，直接评论到 PR #${{ github.event.pull_request.number }}"
-                    gh pr comment ${{ github.event.pull_request.number }} --body "$BODY"
-
-                  else
-                    # --- 场景 B：Push 事件 ---
-                    # 使用 --search 功能寻找包含该 commit SHA 的 PR
-                    # 注意：shorthand SHA 也可以，但 ${{ github.sha }} 是最稳妥的全量哈希
-                    echo "正在搜索关联的 PR..."
-                    PR_NUMBER=$(gh pr list --search "${{ github.sha }}" --state open --json number --jq '.[0].number')
-
-                    if [ -n "$PR_NUMBER" ] && [ "$PR_NUMBER" != "null" ]; then
-                      echo "发现关联 PR #$PR_NUMBER，正在发表评论..."
-                      gh pr comment $PR_NUMBER --body "$BODY"
-                    else
-                      echo "未发现开启状态的关联 PR，评论到 Commit 本身..."
-                      gh api \
-                        --method POST \
-                        -H "Accept: application/vnd.github+json" \
-                        /repos/${{ github.repository }}/commits/${{ github.sha }}/comments \
-                        -f body="$BODY"
-                    fi
-                  fi
+                is-mock-mode: 'true'

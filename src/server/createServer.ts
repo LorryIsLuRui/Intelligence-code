@@ -1,12 +1,11 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { registerRecommendComponentPrompt } from "../prompts/recommendComponentPrompt.js";
 import { registerReusableCodeAdvisorPrompt } from "../prompts/reusableCodeAdvisorPrompt.js";
 import { SymbolRepository } from "../repositories/symbolRepository.js";
 import { createSearchSymbolsTool } from "../tools/searchSymbols.js";
 import { createGetSymbolDetailTool } from "../tools/getSymbolDetail.js";
-import { createRecommendComponentTool } from "../tools/recommendComponent.js";
 import { createReindexTool } from "../tools/reindex.js";
 import { createSearchByStructureTool } from "../tools/searchByStructure.js";
+import { createIncUsageTool } from "../tools/incUsage.js";
 
 export function createServer() {
   const server = new McpServer({
@@ -25,13 +24,12 @@ export function createServer() {
   const structureTool = createSearchByStructureTool(repository);
   server.tool(structureTool.name, structureTool.description, structureTool.inputSchema, structureTool.handler);
 
-  const recommendTool = createRecommendComponentTool(repository);
-  server.tool(recommendTool.name, recommendTool.description, recommendTool.inputSchema, recommendTool.handler);
-
   const reindexTool = createReindexTool();
   server.tool(reindexTool.name, reindexTool.description, reindexTool.inputSchema, reindexTool.handler);
 
-  registerRecommendComponentPrompt(server);
+  const incUsageTool = createIncUsageTool(repository);
+  server.tool(incUsageTool.name, incUsageTool.description, incUsageTool.inputSchema, incUsageTool.handler);
+
   registerReusableCodeAdvisorPrompt(server);
 
   return server;

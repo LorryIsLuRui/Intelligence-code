@@ -1,34 +1,48 @@
 {
-  "name": "code-intelligence-mcp",
-  "version": "0.1.0",
-  "private": true,
-  "description": "Minimal MCP server for code intelligence",
-  "type": "module",
-  "scripts": {
-    "dev": "tsx watch --clear-screen=false --exclude node_modules --exclude dist src/index.ts",
-    "dev:mcp": "node ./scripts/mcp-dev-watch.mjs",
-    "build": "tsc -p tsconfig.json",
-    "start": "node dist/index.js",
-    "index": "tsx src/cli/index-codebase.ts",
-    "detect-duplicates": "tsx src/cli/detect-duplicates.ts",
-    "embedding:dev": "cd embedding-service && python3 -m uvicorn app:app --host 127.0.0.1 --port 8765",
-    "docker:up": "docker compose up -d",
-    "docker:down": "docker compose down",
-    "docker:logs": "docker compose logs -f mysql"
-  },
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.12.3",
-    "@types/react": "^19.2.14",
-    "dotenv": "^16.4.5",
-    "fast-glob": "^3.3.2",
-    "mysql2": "^3.11.3",
-    "react": "^19.2.4",
-    "ts-morph": "^25.0.0",
-    "zod": "^3.23.8"
-  },
-  "devDependencies": {
-    "@types/node": "^22.10.1",
-    "tsx": "^4.19.2",
-    "typescript": "^5.6.3"
-  }
+    "name": "@lorrylurui/code-intelligence-mcp",
+    "version": "1.1.15",
+    "private": false,
+    "description": "MCP server 提供仓库内可复用代码块（ts/tsx/js/jsx/css/less）的索引和查询能力，支持基于代码上下文的智能推荐。",
+    "type": "module",
+    "main": "dist/index.js",
+    "files": [
+        "dist"
+    ],
+    "bin": {
+        "code-intelligence-mcp": "./dist/index.js",
+        "code-intelligence-index": "./dist/cli/index-codebase.js"
+    },
+    "scripts": {
+        "dev": "tsx watch --clear-screen=false --exclude node_modules --exclude dist src/index.ts",
+        "dev:mcp": "node ./scripts/mcp-dev-watch.mjs",
+        "build": "tsc -p tsconfig.json",
+        "start": "node dist/index.js",
+        "index": "tsx src/cli/index-codebase.ts",
+        "detect-duplicates": "tsx src/cli/detect-duplicates.ts",
+        "embedding:dev": "cd embedding-service && python3 -m uvicorn app:app --host 127.0.0.1 --port 8765",
+        "docker:up": "docker compose up -d",
+        "docker:down": "docker compose down",
+        "docker:logs": "docker compose logs -f mysql"
+    },
+    "dependencies": {
+        "@babel/parser": "^7.29.2",
+        "@babel/types": "^7.29.0",
+        "@modelcontextprotocol/sdk": "^1.12.3",
+        "@types/react": "^19.2.14",
+        "dotenv": "^16.4.5",
+        "fast-glob": "^3.3.2",
+        "mysql2": "^3.11.3",
+        "react": "^19.2.4",
+        "ts-morph": "^25.0.0",
+        "zod": "^3.23.8"
+    },
+    "devDependencies": {
+        "@types/node": "^22.10.1",
+        "tsx": "^4.19.2",
+        "typescript": "^5.6.3"
+    },
+    "publishConfig": {
+        "registry": "https://registry.npmjs.org/",
+        "access": "public"
+    }
 }

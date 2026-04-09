@@ -1,6 +1,12 @@
--- 可通过替换 symbols 为其他名称来创建不同项目的表
--- 表名也可通过环境变量 MYSQL_SYMBOLS_TABLE 在代码中动态指定
-CREATE TABLE IF NOT EXISTS symbols (
+/**
+ * 动态生成数据库表结构 SQL，表名可通过环境变量配置
+ */
+import { env } from '../config/env.js';
+
+/** 获取 symbols 表的建表 SQL */
+export function getSymbolsTableSQL(): string {
+    const tableName = env.mysqlSymbolsTable;
+    return `CREATE TABLE IF NOT EXISTS ${tableName} (
   id INT PRIMARY KEY AUTO_INCREMENT,
   name VARCHAR(255) NOT NULL,
   type ENUM('component', 'util', 'selector', 'type') NOT NULL,
@@ -16,9 +22,10 @@ CREATE TABLE IF NOT EXISTS symbols (
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   UNIQUE KEY uk_symbols_path_name (path(512), name(255))
-);
+)`;
+}
 
-CREATE TABLE IF NOT EXISTS dependencies (
-  from_id INT NOT NULL,
-  to_id INT NOT NULL
-);
+/** 获取所有建表 SQL（可一次性执行） */
+export function getAllTableSQLs(): string[] {
+    return [getSymbolsTableSQL()];
+}

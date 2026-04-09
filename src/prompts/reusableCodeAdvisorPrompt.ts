@@ -6,7 +6,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 
 const REUSABLE_CODE_ADVISOR_DESCRIPTION =
-    '在实现需求时检索并推荐最合适的可复用代码代码块（函数/类/模块等）。在用户要求复用现有代码、询问是否已有组件/函数/服务、或要在多个代码块中选最优时使用。';
+    '在实现需求时检索并推荐最合适的可复用代码代码块（组件/函数/类/模块等）。在用户要求复用现有代码、询问是否已有组件/函数/服务、或要在多个代码块中选最优时使用。';
 
 /** 与 SKILL.md 中 `# 可复用代码推荐` 起至约束、示例说明为止的正文一致（无 YAML frontmatter）。 */
 const REUSABLE_CODE_ADVISOR_MARKDOWN = `# 可复用代码推荐
@@ -15,24 +15,26 @@ const REUSABLE_CODE_ADVISOR_MARKDOWN = `# 可复用代码推荐
 
 当用户需要可复用代码或实现类需求时，按顺序执行：
 
-1. 先判断意图：若意图是“组件推荐”（如推荐表单组件、弹窗组件、列表组件等），优先调用 \`recommend_component\`；否则走通用多工具流程。
-2. 通用多工具流程中，先调用 \`search_symbols\` 检索可能满足需求的候选代码块；query 用短英文/关键词（如 formInput），需要限定类型时再加 type（如 component），不要用整句中文。
-3. 执行细则：先 \`search_symbols(limit=20)\` 拉候选，再对 Top 3 调用 \`get_symbol_detail\` 做深度判断。
-4. 若仅凭签名/摘要无法判断，对最相关的若干候选调用 \`get_symbol_detail\` 获取详情。
+1. 调用 search_symbols 检索候选，type 根据用户需求传（component/util/selector/type）
+2. 如果用户指定了结构过滤条件（props/params/properties/hooks），额外调用 search_by_structure 做结构匹配
+3. 先 search_symbols(limit=20) 拉候选，再对 Top 3 调用 get_symbol_detail 做深度判断
+4. 若仅凭签名/摘要无法判断，对最相关的若干候选调用 get_symbol_detail 获取详情
 5. 从以下维度对比候选：
    - 与用户需求的**功能匹配度**
    - **API 是否简单**、入参是否合适
    - **依赖与副作用**风险
    - **复用安全性**（稳定性、耦合度、是否便于扩展）
-6. 给出**唯一首选**推荐，并说明理由。
+6. 给出**唯一首选**推荐，并说明理由
 
 ## 回复结构
 
 按此结构输出（字段名可保留英文或改为中文小标题，二选一全文统一）：
 
-- **首选：** \`<代码块名>\`
+- **首选：** <代码块名>
+- **使用范围：** 展示 meta.callers（被哪些模块调用），用于评估稳定性和适用范围；若无调用记录则显示"新增"
+- **副作用：** 展示 meta.sideEffects（network/timer/dom/storage/mutation），优先推荐无副作用的方案，标注有副作用的方案风险
 - **理由：** 1～3 条要点
-- **其他候选：** 简要列出及取舍
+- **其他候选：** 简要列出及取舍（同步标注副作用）
 - **用法提示：** 结合用户场景的最小集成说明
 
 ## 约束
@@ -40,6 +42,12 @@ const REUSABLE_CODE_ADVISOR_MARKDOWN = `# 可复用代码推荐
 - 优先推荐已有可复用代码块，避免轻易建议新写一套。
 - 若无合适代码块，明确说明，并给出最接近的选项及差距。
 - 推理简洁，面向落地实现。
+
+## 使用反馈
+
+当最终采纳了某个推荐代码块后，必须调用 inc_usage 工具记录采纳行为：
+“请调用 inc_usage({ symbolId: <选中的代码块 id> })”
+其中 symbolId 从 search_symbols 或 search_by_structure 返回结果的 id 字段获取。这条记录会用于后续排序优化。
 
 ## 更多示例
 

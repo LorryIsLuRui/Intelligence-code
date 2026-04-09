@@ -1,10 +1,12 @@
 /**
- * 扫描源码目录，用 ts-morph 解析导出并生成待写入 MySQL 的代码块行。
+ * 扫描源码目录，用 ts-morph 解析 TS/TSX，Babel 解析 JS/JSX，生成待写入 MySQL 的代码块行。
+ * 同时分析调用关系，填充 meta.callers / meta.callees。
  */
 
 import fg from 'fast-glob';
 import { join, resolve } from 'node:path';
-import { Node, Project, type SourceFile } from 'ts-morph';
+import { Node, Project, SyntaxKind, type SourceFile } from 'ts-morph';
+import { readFileSync, existsSync } from 'node:fs';
 import type { SymbolType } from '../types/symbol.js';
 import {
     extractFunctionMeta,
@@ -20,6 +22,25 @@ import {
     isTsxFile,
     snippetForNode,
 } from './heuristics.js';
+import { parseJsFile } from './babelParser.js';
+
+/** 调用关系条目 */
+interface SymbolRef {
+    name: string;
+    path: string;
+}
+
+/** 已收集的符号映射：key = "name|path"，用于快速查找 */
+type SymbolMap = Map<string, { name: string; path: string; exports: Set<string> }>;
+
+/** 判断文件类型 */
+function isJsFile(filePath: string): boolean {
+    return filePath.endsWith('.js') || filePath.endsWith('.jsx');
+}
+
+function isTsFile(filePath: string): boolean {
+    return filePath.endsWith('.ts') || filePath.endsWith('.tsx');
+}
 
 /** 单条索引结果，对应 `symbols` 表一行（尚未含自增 id / usage_count）。 */
 export interface IndexedSymbolRow {
@@ -198,10 +219,20 @@ const DEFAULT_IGNORE = [
     '**/dist/**',
     '**/.git/**',
     '**/coverage/**',
+    '**/build/**',
+    '**/.next/**',
+    '**/.nuxt/**',
+    '**/.output/**',
+    '**/vendor/**',
+    '**/.cache/**',
+    '**/.venv/**',
+    '**/dist-srv/**',
+    '**/.turbo/**',
 ];
 
 /**
  * 按 glob 收集文件，用 ts-morph 加载并遍历每个文件的导出，生成全部代码块行。
+ * 同时分析调用关系，填充 meta.callers / meta.callees。
  * @returns 数组可交给 `upsertSymbols`；无匹配文件时返回空数组（不写库）。
  */
 export async function indexProject(
@@ -212,44 +243,186 @@ export async function indexProject(
         p.startsWith('/') ? p : join(projectRoot, p).replace(/\\/g, '/')
     );
     const ignore = [...DEFAULT_IGNORE, ...(opts.ignore ?? [])];
-
+    console.error(`[indexProject] patterns: ${patterns.join(', ')}`);
     const files = await fg(patterns, {
+        // 根据pattern收集文件列表，支持绝对路径和相对路径（相对于projectRoot），并自动排除node_modules、dist等常见目录。
         absolute: true,
         ignore,
         onlyFiles: true,
         dot: false,
     });
-
+    console.error(`[indexProject] found ${files.length} file(s)`);
     if (files.length === 0) {
         return [];
     }
 
-    const project = new Project({
-        tsConfigFilePath: join(projectRoot, 'tsconfig.json'),
-        skipAddingFilesFromTsConfig: true,
-        skipFileDependencyResolution: true,
-    });
-
-    project.addSourceFilesAtPaths(files);
+    // 分离 TS/TSX 文件和 JS/JSX 文件
+    const tsFiles = files.filter(isTsFile);
+    const jsFiles = files.filter(isJsFile);
 
     const out: IndexedSymbolRow[] = [];
+    const symbolMap: SymbolMap = new Map(); // name -> { name, path, exports }
 
-    for (const sf of project.getSourceFiles()) {
-        const exported = sf.getExportedDeclarations();
-        for (const [exportName, decls] of exported) {
-            for (const decl of decls) {
-                const row = processDeclaration(
-                    exportName,
-                    decl,
-                    sf,
-                    projectRoot
-                );
-                if (row) {
-                    out.push(row);
+    // 处理 TS/TSX 文件（只有 tsconfig.json 存在时才处理）
+    const tsConfigPath = join(projectRoot, 'tsconfig.json');
+    const hasTsConfig = existsSync(tsConfigPath);
+    if (tsFiles.length > 0 && hasTsConfig) {
+        const project = new Project({
+            tsConfigFilePath: tsConfigPath,
+            skipAddingFilesFromTsConfig: true,
+            skipFileDependencyResolution: true,
+        });
+
+        project.addSourceFilesAtPaths(tsFiles);
+
+        for (const sf of project.getSourceFiles()) {
+            const relPath = getRelativePathForDisplay(projectRoot, sf.getFilePath());
+            const exported = sf.getExportedDeclarations();
+            for (const [exportName, decls] of exported) {
+                for (const decl of decls) {
+                    const row = processDeclaration(
+                        exportName,
+                        decl,
+                        sf,
+                        projectRoot
+                    );
+                    if (row) {
+                        out.push(row);
+                        // 建立符号映射
+                        const key = `${row.name}|${row.path}`;
+                        if (!symbolMap.has(key)) {
+                            symbolMap.set(key, { name: row.name, path: row.path, exports: new Set() });
+                        }
+                        symbolMap.get(key)!.exports.add(exportName);
+                    }
                 }
             }
         }
     }
 
+    // 处理 JS/JSX 文件
+    for (const file of jsFiles) {
+        try {
+            const content = readFileSync(file, 'utf-8');
+            const rows = parseJsFile(file, content, projectRoot);
+            out.push(...rows);
+            // 建立符号映射
+            for (const row of rows) {
+                const key = `${row.name}|${row.path}`;
+                if (!symbolMap.has(key)) {
+                    symbolMap.set(key, { name: row.name, path: row.path, exports: new Set() });
+                }
+                symbolMap.get(key)!.exports.add(row.name);
+            }
+        } catch (e) {
+            console.error(`[indexProject] Failed to parse ${file}:`, e);
+        }
+    }
+
+    // 分析调用关系，填充 meta.callers / meta.callees
+    if (tsFiles.length > 0 && hasTsConfig) {
+        const project = new Project({
+            tsConfigFilePath: tsConfigPath,
+            skipAddingFilesFromTsConfig: true,
+            skipFileDependencyResolution: true,
+        });
+        project.addSourceFilesAtPaths(tsFiles);
+        analyzeRelations(project, symbolMap, projectRoot, out);
+    }
+
     return out;
+}
+
+/**
+ * 分析调用关系，填充每个符号的 meta.callers 和 meta.callees
+ */
+function analyzeRelations(
+    project: Project,
+    symbolMap: SymbolMap,
+    projectRoot: string,
+    rows: IndexedSymbolRow[]
+): void {
+    // 构造快速查找：exportName -> [ {name, path} ]
+    const exportToSymbol = new Map<string, { name: string; path: string }[]>();
+    for (const [key, value] of symbolMap) {
+        for (const exp of value.exports) {
+            const list = exportToSymbol.get(exp) || [];
+            list.push({ name: value.name, path: value.path });
+            exportToSymbol.set(exp, list);
+        }
+    }
+
+    // 收集所有 callers 和 callees
+    const callersMap = new Map<string, Set<SymbolRef>>(); // key = "name|path" -> set of callers
+    const calleesMap = new Map<string, Set<SymbolRef>>(); // key = "name|path" -> set of callees
+
+    for (const sf of project.getSourceFiles()) {
+        const filePath = sf.getFilePath();
+        const relPath = getRelativePathForDisplay(projectRoot, filePath);
+
+        // 获取当前文件导出的符号
+        const exported = sf.getExportedDeclarations();
+        const fileExportNames = new Set<string>();
+        for (const [name, decls] of exported) {
+            fileExportNames.add(name);
+        }
+
+        // 遍历 AST 查找调用
+        sf.forEachDescendant((node) => {
+            // 1. 函数调用
+            if (Node.isCallExpression(node)) {
+                const expr = node.getExpression();
+                const name = Node.isIdentifier(expr) ? expr.getText() : null;
+                if (name && exportToSymbol.has(name)) {
+                    const targets = exportToSymbol.get(name)!;
+                    // 当前文件是谁在调用
+                    for (const [expName, decls] of exported) {
+                        for (const decl of decls) {
+                            const callerKey = `${expName}|${relPath}`;
+                            for (const target of targets) {
+                                // callees: 我调用了谁
+                                const calleeSet = calleesMap.get(callerKey) || new Set();
+                                calleeSet.add({ name: target.name, path: target.path });
+                                calleesMap.set(callerKey, calleeSet);
+
+                                // callers: 谁调用了我
+                                const callerSet = callersMap.get(`${target.name}|${target.path}`) || new Set();
+                                callerSet.add({ name: expName, path: relPath });
+                                callersMap.set(`${target.name}|${target.path}`, callerSet);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 2. Import 导入
+            if (Node.isImportDeclaration(node)) {
+                const moduleSpec = node.getModuleSpecifier().getText();
+                // 简单处理：只处理从 ./ 或 ../ 开始的相对导入
+                if (moduleSpec.startsWith("'.") || moduleSpec.startsWith('".')) {
+                    const importPath = moduleSpec.slice(1, -1); // 去掉引号
+                    // 尝试匹配已索引的符号
+                    // 这里简化处理，暂不展开
+                }
+            }
+        });
+    }
+
+    // 写入 rows 的 meta
+    for (const row of rows) {
+        const key = `${row.name}|${row.path}`;
+        const callers = callersMap.get(key);
+        const callees = calleesMap.get(key);
+
+        if (callers && callers.size > 0) {
+            row.meta = row.meta || {};
+            row.meta.callers = [...callers].slice(0, 20); // 限制数量
+        }
+        if (callees && callees.size > 0) {
+            row.meta = row.meta || {};
+            row.meta.callees = [...callees].slice(0, 20);
+        }
+    }
+
+    console.error(`[analyzeRelations] processed ${rows.length} symbols`);
 }
