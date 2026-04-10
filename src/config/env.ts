@@ -77,8 +77,7 @@ const requiredWhenEnabled = [
     'MYSQL_DATABASE',
 ] as const;
 console.error(
-    `[Config] MYSQL_ENABLED: ${process.env.MYSQL_ENABLED},
-    MYSQL_HOST: ${process.env.MYSQL_HOST},
+    `[Config] MYSQL_HOST: ${process.env.MYSQL_HOST},
     MYSQL_USER: ${process.env.MYSQL_USER},
     MYSQL_DATABASE: ${process.env.MYSQL_DATABASE},
     EMBEDDING_SERVICE_URL: ${process.env.EMBEDDING_SERVICE_URL},
@@ -86,7 +85,6 @@ console.error(
     `
 );
 export const env = {
-    mysqlEnabled: process.env.MYSQL_ENABLED === 'true',
     mysqlHost: process.env.MYSQL_HOST ?? '127.0.0.1',
     mysqlPort: Number(process.env.MYSQL_PORT ?? '3306'),
     mysqlUser: process.env.MYSQL_USER ?? 'root',
@@ -99,10 +97,6 @@ export const env = {
 };
 
 export function validateEnv(): void {
-    if (!env.mysqlEnabled) {
-        return;
-    }
-
     for (const key of requiredWhenEnabled) {
         if (!process.env[key]) {
             throw new Error(`Missing environment variable: ${key}`);

@@ -1,4 +1,4 @@
-# Code Intelligence MCP (Minimal)
+# Code Intelligence MCP
 
 - MCP Server（stdio）
 - Tool: `search_symbols`
@@ -8,7 +8,6 @@
 - Tool: `recommend_component`
 - Tool: `incUsage`
 - Prompt: `reusable-code-advisor`
-- MySQL Repository（可选启用）
 - Cursor Skill：`reusable-code-advisor`（`.cursor/skills/reusable-code-advisor/`，
 
 ## 1) 配置mcp servers
@@ -32,5 +31,7 @@
 
 ## 3) 项目根目录环境变量
 
+<!-- 最小配置 1.表名 2.需要检索的文件路径和类型 -->
+
 MYSQL\*SYMBOLS_TABLE=frontend_collections_symbols
-INDEX_GLOB=interview-code-collection/\*\*/\_.{js,jsx,ts,tsx}
+INDEX_GLOB=xxx/\*\*/\_.{js,jsx,ts,tsx}

@@ -145,10 +145,7 @@ async function main() {
     }
     loadProjectDotenv(projectRoot);
 
-    console.error(
-        `[duplicate-check] projectRoot=${projectRoot}, ` +
-        `MYSQL_ENABLED=${process.env.MYSQL_ENABLED}`
-    );
+    console.error(`[duplicate-check] projectRoot=${projectRoot}, `);
 
     // 3️ 解析命令行参数
     const args = parseArgs(process.argv.slice(2));
@@ -176,12 +173,6 @@ async function main() {
         );
     } else {
         validateEnv();
-        const pool = getMySqlPool();
-        if (!pool || !env.mysqlEnabled) {
-            throw new Error(
-                'duplicate-check 需要 MYSQL_ENABLED=true 并可连接 MySQL。'
-            );
-        }
         if (!env.embeddingServiceUrl) {
             throw new Error(
                 'duplicate-check 需要 EMBEDDING_SERVICE_URL（embedding service）。'

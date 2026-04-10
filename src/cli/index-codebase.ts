@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Phase 2 CLI：扫描代码库并写入 MySQL `symbols`（需 `MYSQL_ENABLED=true`）。
+ * Phase 2 CLI：扫描代码库并写入 MySQL `symbols`。
  *
  * 环境变量加载顺序：
  * 1. 命令行参数（最高优先级）
@@ -20,8 +20,7 @@ async function main() {
     const projectRoot = resolve(process.env.INDEX_ROOT ?? process.cwd());
     loadProjectDotenv(projectRoot);
     console.error(
-        `[index] MYSQL_ENABLED=${process.env.MYSQL_ENABLED}, ` +
-            `MYSQL_HOST=${process.env.MYSQL_HOST}` +
+        `MYSQL_HOST=${process.env.MYSQL_HOST}` +
             `[index] projectRoot=${projectRoot}`
     );
 

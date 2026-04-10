@@ -36,22 +36,13 @@ export async function runReindex(
     // 2️ 打印生效的环境变量（便于调试）
     console.error(
         `[reindex] projectRoot=${projectRoot}, dryRun=${dryRun}, ` +
-            `MYSQL_ENABLED=${process.env.MYSQL_ENABLED}, ` +
             `MYSQL_HOST=${process.env.MYSQL_HOST}`
     );
 
     // 3️⃣ 只有需要写入数据库时才检查 MySQL 并建立连接
-    // 注意：直接检查 process.env，因为 env.mysqlEnabled 是模块加载时计算的，不会反映 loadProjectDotenv 的更新
-    const mysqlEnabled = process.env.MYSQL_ENABLED === 'true';
     const embeddingServiceUrl = process.env.EMBEDDING_SERVICE_URL;
     let pool: Awaited<ReturnType<typeof getMySqlPool>> | null = null;
     if (!dryRun) {
-        if (!mysqlEnabled) {
-            throw new Error(
-                `最新！${JSON.stringify(process.env)}执行 reindex 写入数据库需要 MYSQL_ENABLED=true。' +
-                    '第三方项目可在 .env 中配置此变量（未配置则使用 MCP Server 本地配置）。`
-            );
-        }
         pool = getMySqlPool();
         await pool!.query('SELECT 1'); // 测试连接
         console.error('[reindex] MySQL connection successful');
