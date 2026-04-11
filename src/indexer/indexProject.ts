@@ -24,14 +24,13 @@ import {
 } from './heuristics.js';
 import { parseJsFile } from './babelParser.js';
 
-/** 调用关系条目 */
-interface SymbolRef {
-    name: string;
-    path: string;
-}
+const CALLERS_LIMIT = 20;
 
 /** 已收集的符号映射：key = "name|path"，用于快速查找 */
-type SymbolMap = Map<string, { name: string; path: string; exports: Set<string> }>;
+type SymbolMap = Map<
+    string,
+    { name: string; path: string; exports: Set<string> }
+>;
 
 /** 判断文件类型 */
 function isJsFile(filePath: string): boolean {
@@ -276,7 +275,10 @@ export async function indexProject(
         project.addSourceFilesAtPaths(tsFiles);
 
         for (const sf of project.getSourceFiles()) {
-            const relPath = getRelativePathForDisplay(projectRoot, sf.getFilePath());
+            const relPath = getRelativePathForDisplay(
+                projectRoot,
+                sf.getFilePath()
+            );
             const exported = sf.getExportedDeclarations();
             for (const [exportName, decls] of exported) {
                 for (const decl of decls) {
@@ -291,7 +293,11 @@ export async function indexProject(
                         // 建立符号映射
                         const key = `${row.name}|${row.path}`;
                         if (!symbolMap.has(key)) {
-                            symbolMap.set(key, { name: row.name, path: row.path, exports: new Set() });
+                            symbolMap.set(key, {
+                                name: row.name,
+                                path: row.path,
+                                exports: new Set(),
+                            });
                         }
                         symbolMap.get(key)!.exports.add(exportName);
                     }
@@ -310,7 +316,11 @@ export async function indexProject(
             for (const row of rows) {
                 const key = `${row.name}|${row.path}`;
                 if (!symbolMap.has(key)) {
-                    symbolMap.set(key, { name: row.name, path: row.path, exports: new Set() });
+                    symbolMap.set(key, {
+                        name: row.name,
+                        path: row.path,
+                        exports: new Set(),
+                    });
                 }
                 symbolMap.get(key)!.exports.add(row.name);
             }
@@ -342,7 +352,6 @@ function analyzeRelations(
     projectRoot: string,
     rows: IndexedSymbolRow[]
 ): void {
-    // 构造快速查找：exportName -> [ {name, path} ]
     const exportToSymbol = new Map<string, { name: string; path: string }[]>();
     for (const [key, value] of symbolMap) {
         for (const exp of value.exports) {
@@ -352,57 +361,95 @@ function analyzeRelations(
         }
     }
 
-    // 收集所有 callers 和 callees
-    const callersMap = new Map<string, Set<SymbolRef>>(); // key = "name|path" -> set of callers
-    const calleesMap = new Map<string, Set<SymbolRef>>(); // key = "name|path" -> set of callees
+    const callersMap = new Map<string, Set<string>>();
+    const calleesMap = new Map<string, Set<string>>();
 
     for (const sf of project.getSourceFiles()) {
         const filePath = sf.getFilePath();
         const relPath = getRelativePathForDisplay(projectRoot, filePath);
-
-        // 获取当前文件导出的符号
         const exported = sf.getExportedDeclarations();
-        const fileExportNames = new Set<string>();
-        for (const [name, decls] of exported) {
-            fileExportNames.add(name);
-        }
 
-        // 遍历 AST 查找调用
         sf.forEachDescendant((node) => {
-            // 1. 函数调用
+            // 函数调用
             if (Node.isCallExpression(node)) {
                 const expr = node.getExpression();
                 const name = Node.isIdentifier(expr) ? expr.getText() : null;
                 if (name && exportToSymbol.has(name)) {
                     const targets = exportToSymbol.get(name)!;
-                    // 当前文件是谁在调用
                     for (const [expName, decls] of exported) {
-                        for (const decl of decls) {
+                        for (const _decl of decls) {
                             const callerKey = `${expName}|${relPath}`;
                             for (const target of targets) {
                                 // callees: 我调用了谁
-                                const calleeSet = calleesMap.get(callerKey) || new Set();
-                                calleeSet.add({ name: target.name, path: target.path });
+                                const calleeSet =
+                                    calleesMap.get(callerKey) ||
+                                    new Set<string>();
+                                calleeSet.add(`${target.name}|${target.path}`); // ✅ 字符串天然去重
                                 calleesMap.set(callerKey, calleeSet);
 
-                                // callers: 谁调用了我
-                                const callerSet = callersMap.get(`${target.name}|${target.path}`) || new Set();
-                                callerSet.add({ name: expName, path: relPath });
-                                callersMap.set(`${target.name}|${target.path}`, callerSet);
+                                const callerSet =
+                                    callersMap.get(
+                                        `${target.name}|${target.path}`
+                                    ) || new Set<string>();
+                                callerSet.add(`${expName}|${relPath}`);
+                                callersMap.set(
+                                    `${target.name}|${target.path}`,
+                                    callerSet
+                                );
                             }
                         }
                     }
                 }
             }
 
-            // 2. Import 导入
+            // Import 导入关系（含 import type）
             if (Node.isImportDeclaration(node)) {
-                const moduleSpec = node.getModuleSpecifier().getText();
-                // 简单处理：只处理从 ./ 或 ../ 开始的相对导入
-                if (moduleSpec.startsWith("'.") || moduleSpec.startsWith('".')) {
-                    const importPath = moduleSpec.slice(1, -1); // 去掉引号
-                    // 尝试匹配已索引的符号
-                    // 这里简化处理，暂不展开
+                // 1. 解析被导入文件的路径
+                const importedSf = node.getModuleSpecifierSourceFile();
+                if (!importedSf) return; // 无法解析（第三方包等）跳过
+
+                const importedRelPath = getRelativePathForDisplay(
+                    projectRoot,
+                    importedSf.getFilePath()
+                );
+
+                // 2. 收集本条 import 引入了哪些具名符号
+                const namedBindings = node.getNamedImports(); // { SymbolRepository }
+                const defaultImport = node.getDefaultImport(); // import Foo from ...
+
+                const importedNames: string[] = [
+                    ...namedBindings.map((n) => n.getName()),
+                    ...(defaultImport ? [defaultImport.getText()] : []),
+                ];
+
+                if (importedNames.length === 0) return;
+
+                // 3. 当前文件的所有导出符号作为 caller
+                for (const [expName] of exported) {
+                    const callerKey = `${expName}|${relPath}`;
+
+                    for (const importedName of importedNames) {
+                        // 4. 在 symbolMap 里找到被导入符号对应的 row
+                        //    key 格式：`name|path`，name 是 resolveExportName 后的真实名
+                        //    exportToSymbol 里存的是 exportName（可能是 'default'），
+                        //    所以同时按 importedName 和路径在 symbolMap 里直接查
+                        const targetKey = `${importedName}|${importedRelPath}`;
+                        const target = symbolMap.get(targetKey);
+
+                        if (!target) continue;
+
+                        // callee：当前文件的导出符号引用了 target
+                        const calleeSet =
+                            calleesMap.get(callerKey) || new Set<string>();
+                        calleeSet.add(`${target.name}|${target.path}`);
+                        calleesMap.set(callerKey, calleeSet);
+
+                        const callerRefKey = `${target.name}|${target.path}`;
+                        const callerSet =
+                            callersMap.get(callerRefKey) || new Set<string>();
+                        callerSet.add(`${expName}|${relPath}`);
+                        callersMap.set(callerRefKey, callerSet);
+                    }
                 }
             }
         });
@@ -414,13 +461,19 @@ function analyzeRelations(
         const callers = callersMap.get(key);
         const callees = calleesMap.get(key);
 
-        if (callers && callers.size > 0) {
-            row.meta = row.meta || {};
-            row.meta.callers = [...callers].slice(0, 20); // 限制数量
+        if (callers?.size) {
+            row.meta.callers = [...callers].slice(0, CALLERS_LIMIT).map((s) => {
+                // ✅ 反序列化回对象
+                const [name, ...pathParts] = s.split('|');
+                return { name, path: pathParts.join('|') };
+            });
         }
-        if (callees && callees.size > 0) {
-            row.meta = row.meta || {};
-            row.meta.callees = [...callees].slice(0, 20);
+        if (callees?.size) {
+            row.meta.callees = [...callees].slice(0, CALLERS_LIMIT).map((s) => {
+                const [name, ...pathParts] = s.split('|');
+                // path:为了防止路径里万一含有 | 字符时截断错误。
+                return { name, path: pathParts.join('|') };
+            });
         }
     }
 
