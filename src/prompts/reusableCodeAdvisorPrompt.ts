@@ -24,7 +24,9 @@ const REUSABLE_CODE_ADVISOR_MARKDOWN = `# 可复用代码推荐
    - **API 是否简单**、入参是否合适
    - **依赖与副作用**风险
    - **复用安全性**（稳定性、耦合度、是否便于扩展）
-6. 给出**唯一首选**推荐，并说明理由
+6. 给出**唯一首选**推荐，并说明理由，同时使用 **AskUserQuestion **工具,提供两个选项: 
+   - 采纳推荐
+   - 取消
 
 ## 回复结构
 
@@ -36,6 +38,7 @@ const REUSABLE_CODE_ADVISOR_MARKDOWN = `# 可复用代码推荐
 - **理由：** 1～3 条要点
 - **其他候选：** 简要列出及取舍（同步标注副作用）
 - **用法提示：** 结合用户场景的最小集成说明
+- **是否采纳：** 展示两个选项: 选项1.采纳推荐 选项2.取消。等待用户确认
 
 ## 约束
 
@@ -45,8 +48,8 @@ const REUSABLE_CODE_ADVISOR_MARKDOWN = `# 可复用代码推荐
 
 ## 使用反馈
 
-当最终采纳了某个推荐代码块后，必须调用 inc_usage 工具记录采纳行为：
-“请调用 inc_usage({ symbolId: <选中的代码块 id> })”
+当选择‘采纳推荐’必须调用 inc_usage 工具记录采纳行为，调用格式如下：
+“inc_usage({ symbolId: <选中的代码块 id> })”
 其中 symbolId 从 search_symbols 或 search_by_structure 返回结果的 id 字段获取。这条记录会用于后续排序优化。
 
 ## 更多示例
