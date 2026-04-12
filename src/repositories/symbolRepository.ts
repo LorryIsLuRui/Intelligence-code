@@ -18,6 +18,8 @@ interface SymbolRow extends RowDataPacket {
     created_at?: string | null;
     embedding?: unknown;
 }
+const THREADHOLD_SIMILARITY_BEFORE_RANKED = 0.5;
+const TOP_K_FOR_RANKING = 100; // 进入复杂排序的候选数上限（语义相似度初筛后保留的结果数，过大会增加排序成本）
 
 const inMemorySymbols: CodeSymbol[] = [
     {
@@ -143,8 +145,14 @@ export class SymbolRepository {
     }
 
     /**
-     * Phase 5：对自然语言查询做向量检索，返回代码块与余弦相似度（已去掉 embedding 列便于 JSON 输出）。
-     */
+   * Phase 5：对自然语言查询做向量检索，启用分桶采样策略，返回代码
+  块与余弦相似度。
+   * 分桶策略：
+   * - 第一层：按 category 占比计算每个分类应采样条数（保底10条）
+   * - 第二层：每个 path 子桶内乱序后采样 Math.max(5,
+  floor(catLimit / pathCount)) 条
+  * 最终选择topK，进入排序
+   */
     async searchSemanticHits(
         query: string,
         opts?: { type?: SymbolType; candidateLimit?: number; limit?: number }
@@ -159,7 +167,7 @@ export class SymbolRepository {
         }
 
         const candidateLimit = opts?.candidateLimit ?? 3000;
-        const limit = opts?.limit ?? 20;
+        const limit = opts?.limit ?? TOP_K_FOR_RANKING;
         const type = opts?.type;
 
         const client = createEmbeddingClient(env.embeddingServiceUrl);
@@ -167,7 +175,8 @@ export class SymbolRepository {
         if (!queryVec?.length) {
             throw new Error('查询向量为空');
         }
-
+        // 查询足够的数据以支持分桶采样（3倍候选数以覆盖各桶）
+        const fetchLimit = candidateLimit * 3;
         let sql = `
       SELECT id, name, type, category, path, description, content, CAST(meta AS CHAR) AS meta, usage_count, created_at, embedding
       FROM ${env.mysqlSymbolsTable}
@@ -180,8 +189,8 @@ export class SymbolRepository {
             params.push(type);
         }
 
-        sql += ' ORDER BY usage_count DESC LIMIT ?';
-        params.push(candidateLimit);
+        sql += ' DESC LIMIT ?';
+        params.push(fetchLimit);
 
         const [rows] = await this.pool.query<SymbolRow[]>(sql, params);
         const withVec = rows
@@ -189,15 +198,86 @@ export class SymbolRepository {
             .filter(
                 (s) => s.embedding && s.embedding.length === queryVec.length
             );
-
-        return withVec
+        // 分桶采样：按 category + path 两层分桶
+        const sampled = this.bucketSampling(withVec, candidateLimit);
+        return sampled
             .map((s) => {
                 const sim = cosineSimilarity(queryVec, s.embedding!);
                 const { embedding: _, ...rest } = s;
                 return { symbol: rest as CodeSymbol, similarity: sim };
             })
+            .filter((x) => x.similarity >= THREADHOLD_SIMILARITY_BEFORE_RANKED) // 初筛阈值，过滤掉明显不相关的结果
             .sort((a, b) => b.similarity - a.similarity)
             .slice(0, limit);
+    }
+
+    /**
+   * 分桶采样核心逻辑
+   * - 第一层：按 category 占比计算每个分类应采样条数（保底10条）
+   * - 第二层：每个 path 子桶内乱序后采样 Math.max(5,
+  floor(catLimit / pathCount)) 条
+   */
+    private bucketSampling(symbols: CodeSymbol[], limit: number): CodeSymbol[] {
+        if (symbols.length === 0) return [];
+
+        // 按 category 分组
+        const categoryGroups = new Map<string, CodeSymbol[]>();
+        for (const s of symbols) {
+            const cat = s.category ?? '__null__';
+            if (!categoryGroups.has(cat)) {
+                categoryGroups.set(cat, []);
+            }
+            categoryGroups.get(cat)!.push(s);
+        }
+
+        const total = symbols.length;
+        const sampled: CodeSymbol[] = [];
+
+        // 第一层：按 category 占比计算采样数，保底10条
+        for (const [, catSymbols] of categoryGroups) {
+            const catCount = catSymbols.length;
+            const catRatio = catCount / total;
+            const catLimit = Math.max(10, Math.floor(limit * catRatio));
+
+            // 按 path 分组（提取目录部分）
+            const pathGroups = new Map<string, CodeSymbol[]>();
+            for (const s of catSymbols) {
+                const dir = s.path.includes('/')
+                    ? s.path.slice(0, s.path.lastIndexOf('/'))
+                    : '__root__';
+                if (!pathGroups.has(dir)) {
+                    pathGroups.set(dir, []);
+                }
+                pathGroups.get(dir)!.push(s);
+            }
+
+            const pathCount = pathGroups.size;
+            const perPathSample = Math.max(5, Math.floor(catLimit / pathCount));
+
+            // 第二层：每个 path 子桶内乱序后采样
+            for (const pathSymbols of pathGroups.values()) {
+                // 原地乱序（Fisher- Y ates）
+                for (let i = pathSymbols.length - 1; i > 0; i--) {
+                    const j = Math.floor(Math.random() * (i + 1));
+                    [pathSymbols[i], pathSymbols[j]] = [
+                        pathSymbols[j],
+                        pathSymbols[i],
+                    ];
+                }
+
+                const pathSampleCount = Math.min(
+                    perPathSample,
+                    pathSymbols.length
+                );
+                sampled.push(...pathSymbols.slice(0, pathSampleCount));
+
+                if (sampled.length >= limit) break;
+            }
+
+            if (sampled.length >= limit) break;
+        }
+
+        return sampled.slice(0, limit);
     }
 
     async getByName(name: string): Promise<CodeSymbol | null> {
