@@ -8,6 +8,7 @@ import type { IndexedSymbolRow } from './indexProject.js';
 import {
     getRelativePathForDisplay,
     inferCategoryFromPath,
+    inferCategoryFromName,
 } from './heuristics.js';
 
 /** 从 JS 文件内容解析导出的代码块 */
@@ -357,7 +358,8 @@ function createRowFromFunction(
     isJsx: boolean
 ): IndexedSymbolRow {
     const relPath = getRelativePathForDisplay(projectRoot, filePath);
-    const category = inferCategoryFromPath(filePath);
+    const category =
+        inferCategoryFromPath(filePath) || inferCategoryFromName(name);
 
     // 检测是否有 JSX
     const hasJsx = isJsx || containsJsx(decl);
@@ -534,16 +536,20 @@ function getNodeText(n: unknown): string {
         if (propNode && typeof propNode === 'object') {
             const propType = (propNode as Record<string, unknown>).type;
             if (propType === 'Identifier') {
-                prop = (propNode as Record<string, unknown>).name as string || '';
+                prop =
+                    ((propNode as Record<string, unknown>).name as string) ||
+                    '';
             } else if (propType === 'Literal') {
-                prop = String((propNode as Record<string, unknown>).value ?? '');
+                prop = String(
+                    (propNode as Record<string, unknown>).value ?? ''
+                );
             }
         }
         const computed = node.computed;
         return obj + (computed ? `[${prop}]` : `.${prop}`);
     }
     if (type === 'Identifier') {
-        return node.name as string || '';
+        return (node.name as string) || '';
     }
     if (type === 'Literal' || type === 'NullLiteral') {
         const val = node.value;

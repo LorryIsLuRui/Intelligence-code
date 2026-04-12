@@ -21,6 +21,7 @@ import {
     isSelectorLike,
     isTsxFile,
     snippetForNode,
+    inferCategoryFromName,
 } from './heuristics.js';
 import { parseJsFile } from './babelParser.js';
 
@@ -110,8 +111,9 @@ function processDeclaration(
 ): IndexedSymbolRow | null {
     const filePath = sf.getFilePath();
     const relPath = getRelativePathForDisplay(projectRoot, filePath);
-    const category = inferCategoryFromPath(filePath);
     const name = resolveExportName(exportName, decl);
+    const category =
+        inferCategoryFromPath(filePath) || inferCategoryFromName(name);
     const description = getLeadingDocDescription(decl) ?? null;
 
     if (
