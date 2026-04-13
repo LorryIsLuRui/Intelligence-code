@@ -63,7 +63,10 @@ export async function runReindex(
     if (!options.dryRun && rows.length > 0 && embeddingServiceUrl) {
         try {
             const client = createEmbeddingClient(embeddingServiceUrl);
-            const texts = rows.map(indexedRowToEmbedText);
+            // 先实现ts语义模板,js保留原逻辑
+            const texts = rows.map(
+                (row) => row.semantic_hash ?? indexedRowToEmbedText(row)
+            );
             const vecs = await embedAll(client, texts);
             embeddingPayload = vecs;
             embeddingsComputed = true;

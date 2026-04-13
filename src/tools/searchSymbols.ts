@@ -4,7 +4,9 @@ import { rankSemanticHits, rankSymbols } from '../services/ranking.js';
 
 export const searchSymbolsInput = z.object({
     query: z.string().min(1),
-    type: z.enum(['component', 'util', 'selector', 'type']).optional(),
+    type: z
+        .enum(['component', 'function', 'hook', 'type', 'interface', 'class'])
+        .optional(),
     ranked: z.boolean().optional().default(true),
     /** Phase 5：自然语言 / 描述句检索（需 EMBEDDING_SERVICE_URL + 索引已写入 embedding） */
     semantic: z.boolean().optional().default(false),

@@ -5,7 +5,9 @@ import { rankSymbols } from '../services/ranking.js';
 
 export const searchByStructureInput = z.object({
     fields: z.array(z.string().min(1)).min(1),
-    type: z.enum(['component', 'util', 'selector', 'type']).optional(),
+    type: z
+        .enum(['component', 'function', 'hook', 'type', 'interface', 'class'])
+        .optional(),
     category: z.string().optional(),
     limit: z.number().int().min(1).max(100).optional().default(20),
     ranked: z.boolean().optional().default(true),

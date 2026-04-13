@@ -72,14 +72,8 @@ export function inferCategoryFromName(originName: string): string | null {
     return null;
 }
 
-/**
- * 启发式判断导出是否更像状态选择器（selector）。
- * @returns `true` 时索引类型记为 `selector`，否则同文件下函数多为 `util`。
- */
-export function isSelectorLike(filePath: string, exportName: string): boolean {
-    const lowerPath = filePath.toLowerCase();
-    if (lowerPath.includes('selector')) return true;
-    if (/selector$/i.test(exportName)) return true;
+export function isHookLike(exportName: string): boolean {
+    if (/use$/i.test(exportName)) return true;
     return false;
 }
 

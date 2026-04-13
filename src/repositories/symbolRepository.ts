@@ -37,7 +37,7 @@ const inMemorySymbols: CodeSymbol[] = [
     {
         id: 2,
         name: 'formatDate',
-        type: 'util',
+        type: 'function',
         category: 'date',
         path: 'src/utils/date.ts',
         description: 'Format date to YYYY-MM-DD',

@@ -18,12 +18,13 @@ import {
     getRelativePathForDisplay,
     hasJsxInNode,
     inferCategoryFromPath,
-    isSelectorLike,
+    isHookLike,
     isTsxFile,
     snippetForNode,
     inferCategoryFromName,
 } from './heuristics.js';
 import { parseJsFile } from './babelParser.js';
+import { computeFileHash, computeSemanticHash } from './astNormalizer.js';
 
 const CALLERS_LIMIT = 20;
 
@@ -42,22 +43,16 @@ function isTsFile(filePath: string): boolean {
     return filePath.endsWith('.ts') || filePath.endsWith('.tsx');
 }
 
-/** 单条索引结果，对应 `symbols` 表一行（尚未含自增 id / usage_count）。 */
 export interface IndexedSymbolRow {
-    /** 导出代码块名（含 default 解析后的真实名） */
     name: string;
-    /** 设计文档中的技术类型：component / util / selector / type */
     type: SymbolType;
-    /** 由路径推断的业务子目录，可为空 */
     category: string | null;
-    /** 相对工程根的路径，入库与检索展示用 */
     path: string;
-    /** JSDoc 摘要，对应 `description` */
     description: string | null;
-    /** 声明源码片段，对应 `content` */
     content: string | null;
-    /** JSON 扩展字段，对应 `meta` 列 */
     meta: Record<string, unknown>;
+    semantic_hash?: string; // 代码语义模板哈希值
+    file_hash?: string; // 文件哈希值
 }
 
 /**
@@ -121,24 +116,33 @@ function processDeclaration(
         Node.isTypeAliasDeclaration(decl)
     ) {
         const meta = extractInterfaceOrTypeMeta(decl);
+        const type = Node.isInterfaceDeclaration(decl) ? 'interface' : 'type';
         return {
             name,
-            type: 'type',
+            type,
             category,
             path: relPath,
             description,
             content: snippetForNode(decl),
             meta,
+            file_hash: computeFileHash(sf.getFullText()),
+            semantic_hash: computeSemanticHash({
+                name,
+                type,
+                description,
+                meta,
+                node: decl,
+            }),
         };
     }
 
     if (Node.isFunctionDeclaration(decl)) {
         const jsx = isTsxFile(filePath) && hasJsxInNode(decl);
-        const type: SymbolType = jsx
-            ? 'component'
-            : isSelectorLike(filePath, name)
-              ? 'selector'
-              : 'util';
+        const type: SymbolType = isHookLike(name)
+            ? 'hook'
+            : jsx
+              ? 'component'
+              : 'function';
         const raw = extractMetaFromCallable(decl);
         const meta = mergeCallableMeta(type, raw);
         return {
@@ -149,6 +153,14 @@ function processDeclaration(
             description,
             content: snippetForNode(decl),
             meta,
+            semantic_hash: computeSemanticHash({
+                name,
+                type,
+                description,
+                meta,
+                node: decl,
+            }),
+            file_hash: computeFileHash(sf.getFullText()),
         };
     }
 
@@ -172,11 +184,11 @@ function processDeclaration(
         if (!callable) return null;
 
         const jsx = isTsxFile(filePath) && hasJsxInNode(callable);
-        const type: SymbolType = jsx
-            ? 'component'
-            : isSelectorLike(filePath, name)
-              ? 'selector'
-              : 'util';
+        const type: SymbolType = isHookLike(name)
+            ? 'hook'
+            : jsx
+              ? 'component'
+              : 'function';
         const raw = extractMetaFromCallable(callable);
         const meta = mergeCallableMeta(type, raw);
         return {
@@ -187,19 +199,36 @@ function processDeclaration(
             description,
             content: snippetForNode(callable),
             meta,
+            semantic_hash: computeSemanticHash({
+                name,
+                type,
+                description,
+                meta,
+                node: callable,
+            }),
+            file_hash: computeFileHash(sf.getFullText()),
         };
     }
 
     if (Node.isClassDeclaration(decl)) {
         // 轻量：仅将 class 记为 util（后续可扩展为带 JSX 的组件类）
+        const type = 'class';
         return {
             name,
-            type: 'util',
+            type,
             category,
             path: relPath,
             description,
             content: snippetForNode(decl),
-            meta: { kind: 'class' },
+            meta: { kind: type },
+            semantic_hash: computeSemanticHash({
+                name,
+                type,
+                description,
+                meta: { kind: type },
+                node: decl,
+            }),
+            file_hash: computeFileHash(sf.getFullText()),
         };
     }
 
@@ -282,6 +311,23 @@ export async function indexProject(
                 sf.getFilePath()
             );
             const exported = sf.getExportedDeclarations();
+            // 只检索export的代码，减少噪音
+            // 如果要检索未export的，需要考虑
+            /**
+             *  类型一：真正的内部实现，不应该复用
+                function _buildSqlFragment() {}     // 和模块强耦合，外部用不了
+                const __validateInternal = () => {} // 私有约定（下划线前缀）
+                → 索引了也没用，反而是噪音
+
+                类型二：工具函数，只是作者忘了 export / 懒得 export
+                function debounce(fn, ms) {}        // 通用，完全可以复用
+                function formatCurrency(n) {}       // 通用，其他地方也需要
+                → 索引有价值，还能反向提示"这个应该被 export"
+
+                类型三：文件内共享但跨文件无意义
+                function getLocalConfig() {}        // 依赖闭包变量，移出去就坏了
+                → 索引意义不大
+             */
             for (const [exportName, decls] of exported) {
                 for (const decl of decls) {
                     const row = processDeclaration(

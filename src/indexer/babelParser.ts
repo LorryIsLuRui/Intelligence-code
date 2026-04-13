@@ -366,16 +366,14 @@ function createRowFromFunction(
 
     // 判断类型：
     // 1. 有 JSX = component
-    // 2. 名字包含 selector = selector
+    // 2. 名字包含 use = hook
     // 3. 大写开头（JSX 组件约定）= component
-    // 4. 其他 = util
-    const type: SymbolType = hasJsx
-        ? 'component'
-        : name.toLowerCase().includes('selector')
-          ? 'selector'
-          : isJsx && /^[A-Z]/.test(name)
-            ? 'component'
-            : 'util';
+    // 4. 其他 = function
+    const type: SymbolType = name.toLowerCase().includes('use')
+        ? 'hook'
+        : isJsx && /^[A-Z]/.test(name)
+          ? 'component'
+          : 'function';
 
     const params = decl.params
         .filter((p): p is bt.Identifier => bt.isIdentifier(p))
@@ -398,6 +396,8 @@ function createRowFromFunction(
             ...(hooks.length ? { hooks } : {}),
             ...(sideEffects.length ? { sideEffects } : {}),
         },
+        file_hash: '',
+        semantic_hash: '',
     };
 }
 
@@ -411,7 +411,7 @@ function createRowFromClass(
     const category = inferCategoryFromPath(filePath);
 
     // 大写开头的类视为组件
-    const type: SymbolType = /^[A-Z]/.test(name) ? 'component' : 'util';
+    const type: SymbolType = /^[A-Z]/.test(name) ? 'component' : 'function';
 
     return {
         name,
@@ -419,8 +419,11 @@ function createRowFromClass(
         category,
         path: relPath,
         description: null,
+        // content meta.kind 暂时废弃不用，
         content: null,
-        meta: { kind: 'class' },
+        meta: {},
+        file_hash: '',
+        semantic_hash: '',
     };
 }
 

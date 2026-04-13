@@ -24,8 +24,8 @@ export async function upsertSymbols(
     const actor = process.env.GITHUB_USERNAME?.trim() || 'LorryIsLuRui';
     await pool.query(getSymbolsTableSQL()); // 确保表存在
     const sql = `
-    INSERT INTO ${env.mysqlSymbolsTable} (name, type, category, path, description, content, meta, insert_user, updated_user, embedding)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO ${env.mysqlSymbolsTable} (name, type, category, path, description, content, meta, insert_user, updated_user, embedding, semantic_hash, file_hash)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON DUPLICATE KEY UPDATE
       type = VALUES(type),
       category = VALUES(category),
@@ -33,7 +33,9 @@ export async function upsertSymbols(
       content = VALUES(content),
       meta = VALUES(meta),
       updated_user = VALUES(updated_user),
-      embedding = CASE WHEN VALUES(embedding) IS NOT NULL THEN VALUES(embedding) ELSE embedding END
+      embedding = CASE WHEN VALUES(embedding) IS NOT NULL THEN VALUES(embedding) ELSE embedding END,
+      semantic_hash = VALUES(semantic_hash),
+      file_hash = VALUES(file_hash)
   `;
 
     const conn = await pool.getConnection();
@@ -55,6 +57,8 @@ export async function upsertSymbols(
                 actor,
                 actor,
                 embJson,
+                r.semantic_hash,
+                r.file_hash,
             ]);
         }
         await conn.commit();

@@ -1,3 +1,5 @@
+// 仅js类型使用，后续会删掉
+
 import type { IndexedSymbolRow } from './indexProject.js';
 const MAX_CONTENT_LENGTH = 1200;
 
