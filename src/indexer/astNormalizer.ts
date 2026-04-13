@@ -217,7 +217,7 @@ function normalizeParameter(
             destrProps.push(`${name}${hasQ ? '?' : ''}:${valueType}`);
         }
 
-        // 排序 key
+        // 排序 key, 防止仅仅因为顺序不一样导致hash不稳定
         destrProps.sort();
 
         return `${prefix}{${destrProps.join(',')}}:${typeStr}${suffix}`;
