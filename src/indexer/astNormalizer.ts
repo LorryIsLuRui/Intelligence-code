@@ -314,7 +314,6 @@ export function extractNormalizedSignature(node: Node): string {
             .getParameters()
             .sort()
             .map((p, i) => normalizeParameter(p, i));
-        console.error('===params', params, typeParams);
         const retNode = node.getReturnTypeNode?.();
         const returnType = retNode
             ? normalizeTypeString(retNode.getText())
@@ -395,7 +394,7 @@ export function computeSemanticHash(
     row: Pick<CodeSymbol, 'name' | 'type' | 'description' | 'meta'> & {
         node?: Node;
     }
-): string {
+): Array<string> {
     const node = row.node || null;
     const meta = row.meta || {};
     const stable = {
@@ -408,8 +407,8 @@ export function computeSemanticHash(
         ].sort(),
         hooks: [...((meta.hooks as string[] | undefined) ?? [])].sort(),
     };
-    // console.error('==computeSemanticHash stable object:', stable);
-    return createHash('sha256').update(JSON.stringify(stable)).digest('hex');
+    const stableStr = JSON.stringify(stable);
+    return [createHash('sha256').update(stableStr).digest('hex'), stableStr];
 }
 
 // ─────────────────────────────────────────────

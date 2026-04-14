@@ -5,6 +5,10 @@ import { indexedRowToEmbedText } from '../indexer/embedText.js';
 import { indexProject } from '../indexer/indexProject.js';
 import { upsertSymbols } from '../indexer/persistSymbols.js';
 import {
+    initCategoryEmbeddings,
+    resolveCategory,
+} from '../indexer/categoryClassifier.js';
+import {
     createEmbeddingClient,
     embedAll,
 } from '../services/embeddingClient.js';
@@ -41,6 +45,11 @@ export async function runReindex(
 
     // 3️⃣ 只有需要写入数据库时才检查 MySQL 并建立连接
     const embeddingServiceUrl = process.env.EMBEDDING_SERVICE_URL;
+    if (!dryRun && embeddingServiceUrl) {
+        // 初始化 category embeddings
+        await initCategoryEmbeddings();
+    }
+
     let pool: Awaited<ReturnType<typeof getMySqlPool>> | null = null;
     if (!dryRun) {
         pool = getMySqlPool();
@@ -48,7 +57,7 @@ export async function runReindex(
         console.error('[reindex] MySQL connection successful');
     }
 
-    const rows = await indexProject({
+    let rows = await indexProject({
         projectRoot,
         globPatterns: options.globPatterns,
         ignore: options.ignore,
@@ -68,6 +77,8 @@ export async function runReindex(
                 (row) => row.semantic_hash ?? indexedRowToEmbedText(row)
             );
             const vecs = await embedAll(client, texts);
+            // 生成category
+            rows = await resolveCategory(rows, vecs);
             embeddingPayload = vecs;
             embeddingsComputed = true;
         } catch (err) {

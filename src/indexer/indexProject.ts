@@ -107,8 +107,6 @@ function processDeclaration(
     const filePath = sf.getFilePath();
     const relPath = getRelativePathForDisplay(projectRoot, filePath);
     const name = resolveExportName(exportName, decl);
-    const category =
-        inferCategoryFromPath(filePath) || inferCategoryFromName(name);
     const description = getLeadingDocDescription(decl) ?? null;
 
     if (
@@ -117,22 +115,23 @@ function processDeclaration(
     ) {
         const meta = extractInterfaceOrTypeMeta(decl);
         const type = Node.isInterfaceDeclaration(decl) ? 'interface' : 'type';
+        const [semantic_hash, stableStr] = computeSemanticHash({
+            name,
+            type,
+            description,
+            meta,
+            node: decl,
+        });
         return {
             name,
             type,
-            category,
+            category: '',
             path: relPath,
             description,
-            content: snippetForNode(decl),
+            content: stableStr,
             meta,
             file_hash: computeFileHash(sf.getFullText()),
-            semantic_hash: computeSemanticHash({
-                name,
-                type,
-                description,
-                meta,
-                node: decl,
-            }),
+            semantic_hash,
         };
     }
 
@@ -145,21 +144,22 @@ function processDeclaration(
               : 'function';
         const raw = extractMetaFromCallable(decl);
         const meta = mergeCallableMeta(type, raw);
+        const [semantic_hash, stableStr] = computeSemanticHash({
+            name,
+            type,
+            description,
+            meta,
+            node: decl,
+        });
         return {
             name,
             type,
-            category,
+            category: '',
             path: relPath,
             description,
-            content: snippetForNode(decl),
+            content: stableStr,
             meta,
-            semantic_hash: computeSemanticHash({
-                name,
-                type,
-                description,
-                meta,
-                node: decl,
-            }),
+            semantic_hash,
             file_hash: computeFileHash(sf.getFullText()),
         };
     }
@@ -191,21 +191,22 @@ function processDeclaration(
               : 'function';
         const raw = extractMetaFromCallable(callable);
         const meta = mergeCallableMeta(type, raw);
+        const [semantic_hash, stableStr] = computeSemanticHash({
+            name,
+            type,
+            description,
+            meta,
+            node: callable,
+        });
         return {
             name,
             type,
-            category,
+            category: '',
             path: relPath,
             description,
-            content: snippetForNode(callable),
+            content: stableStr,
             meta,
-            semantic_hash: computeSemanticHash({
-                name,
-                type,
-                description,
-                meta,
-                node: callable,
-            }),
+            semantic_hash,
             file_hash: computeFileHash(sf.getFullText()),
         };
     }
@@ -213,21 +214,22 @@ function processDeclaration(
     if (Node.isClassDeclaration(decl)) {
         // 轻量：仅将 class 记为 util（后续可扩展为带 JSX 的组件类）
         const type = 'class';
+        const [semantic_hash, stableStr] = computeSemanticHash({
+            name,
+            type,
+            description,
+            meta: { kind: type },
+            node: decl,
+        });
         return {
             name,
             type,
-            category,
+            category: '',
             path: relPath,
             description,
-            content: snippetForNode(decl),
+            content: stableStr,
             meta: { kind: type },
-            semantic_hash: computeSemanticHash({
-                name,
-                type,
-                description,
-                meta: { kind: type },
-                node: decl,
-            }),
+            semantic_hash,
             file_hash: computeFileHash(sf.getFullText()),
         };
     }
