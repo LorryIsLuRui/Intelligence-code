@@ -18,7 +18,7 @@
         "build": "tsc -p tsconfig.json",
         "start": "node dist/index.js",
         "index": "tsx src/cli/index-codebase.ts",
-        "detect-duplicates": "tsx src/cli/detect-duplicates.ts",
+        "ci-index": "tsx src/cli/ci-index-cli.ts",
         "embedding:dev": "cd embedding-service && python3 -m uvicorn app:app --host 127.0.0.1 --port 8765",
         "docker:up": "docker compose up -d",
         "docker:down": "docker compose down",

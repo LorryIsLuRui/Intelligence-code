@@ -4,6 +4,7 @@ import { getMySqlPool } from '../db/mysql.js';
 import type { CodeSymbol, SymbolType } from '../types/symbol.js';
 import { createEmbeddingClient } from '../services/embeddingClient.js';
 import { cosineSimilarity } from '../services/vectorMath.js';
+import { SEARCHABLE_STATUS } from '../config/symbolStatus.js';
 
 interface SymbolRow extends RowDataPacket {
     id: number;
@@ -130,6 +131,7 @@ export class SymbolRepository {
       SELECT id, name, type, category, path, description, content, CAST(meta AS CHAR) AS meta, usage_count, created_at
       FROM ${env.mysqlSymbolsTable}
       WHERE (name LIKE ? OR description LIKE ?)
+        AND status = ${SEARCHABLE_STATUS}
     `;
         params.push(`%${query}%`);
 
@@ -181,6 +183,7 @@ export class SymbolRepository {
       SELECT id, name, type, category, path, description, content, CAST(meta AS CHAR) AS meta, usage_count, created_at, embedding
       FROM ${env.mysqlSymbolsTable}
       WHERE embedding IS NOT NULL
+        AND status = ${SEARCHABLE_STATUS}
     `;
         const params: Array<string | number> = [];
 

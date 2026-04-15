@@ -14,6 +14,7 @@ on:
 permissions:
     contents: read
     pull-requests: write
+
 concurrency:
     group: ${{ github.workflow }}-${{ github.ref }}
     cancel-in-progress: true
@@ -22,12 +23,16 @@ jobs:
     duplicate-check:
         runs-on: ubuntu-latest
         steps:
+            - name: Run incremental index (optional)
+              uses: ./.github/actions/run-increase-index
+              with:
+                  mysql-host: ${{ secrets.MYSQL_HOST }}
+                  mysql-port: ${{ secrets.MYSQL_PORT }}
+                  mysql-user: ${{ secrets.MYSQL_USER }}
+                  mysql-password: ${{ secrets.MYSQL_PASSWORD }}
+                  mysql-database: ${{ secrets.MYSQL_DATABASE }}
+                  mysql-symbols-table: ${{ secrets.MYSQL_SYMBOLS_TABLE || 'symbols' }}
+                  is-mock-mode: 'false'
+
             # 推荐：使用封装好的 Action（需要发布后使用）
             # - uses: lorrylurui/code-intelligence-check@v1
-            #   with:
-            #     is-mock-mode: 'true'
-
-            # 内联用法（当前项目直接使用）
-            - uses: ./.github/actions/code-intelligence-check
-              with:
-                is-mock-mode: 'true'

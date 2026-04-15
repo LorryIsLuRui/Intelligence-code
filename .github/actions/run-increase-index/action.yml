@@ -1,0 +1,90 @@
+name: 'run increase index'
+description: '执行增量文件索引（仅结构化写入与状态标记）'
+author: 'LorryIsLuRui'
+
+branding:
+  icon: 'search'
+  color: 'blue'
+
+inputs:
+  mysql-host:
+    description: 'MySQL 主机地址'
+    required: false
+    default: ''
+  mysql-port:
+    description: 'MySQL 端口'
+    required: false
+    default: '3306'
+  mysql-user:
+    description: 'MySQL 用户名'
+    required: false
+    default: ''
+  mysql-password:
+    description: 'MySQL 密码'
+    required: false
+    default: ''
+  mysql-database:
+    description: 'MySQL 数据库名'
+    required: false
+    default: 'code_intelligence'
+  mysql-symbols-table:
+    description: 'Symbols 表名'
+    required: false
+    default: 'symbols'
+  is-mock-mode:
+    description: '是否使用 mock 模式（true 时跳过索引）'
+    required: false
+    default: 'true'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: 'npm'
+
+    - name: Install dependencies
+      run: npm ci
+      shell: bash
+
+    - name: Calculate changed/deleted/renamed files
+      id: changed-files
+      run: |
+        if [ "${{ github.event_name }}" = "pull_request" ] && [ -n "${{ github.base_ref }}" ]; then
+          git fetch origin ${{ github.base_ref }} --depth=1
+          git diff --name-only --diff-filter=AM origin/${{ github.base_ref }}...HEAD > changed_files.txt
+          git diff --name-only --diff-filter=D origin/${{ github.base_ref }}...HEAD > deleted_files.txt
+          git diff --name-status --diff-filter=R origin/${{ github.base_ref }}...HEAD | awk '{print $2":"$3}' > renamed_files.txt
+        else
+          git diff --name-only --diff-filter=AM HEAD~1 HEAD > changed_files.txt 2>/dev/null || echo "" > changed_files.txt
+          git diff --name-only --diff-filter=D HEAD~1 HEAD > deleted_files.txt 2>/dev/null || echo "" > deleted_files.txt
+          git diff --name-status --diff-filter=R HEAD~1 HEAD | awk '{print $2":"$3}' > renamed_files.txt 2>/dev/null || echo "" > renamed_files.txt
+        fi
+
+        echo "changed_files=$(cat changed_files.txt | tr '\n' ',' | sed 's/,$//')" >> $GITHUB_OUTPUT
+        echo "deleted_files=$(cat deleted_files.txt | tr '\n' ',' | sed 's/,$//')" >> $GITHUB_OUTPUT
+        echo "renamed_files=$(cat renamed_files.txt | tr '\n' ',' | sed 's/,$//')" >> $GITHUB_OUTPUT
+      shell: bash
+
+    - name: Run incremental index
+      if: inputs.is-mock-mode == 'false'
+      env:
+        MYSQL_HOST: ${{ inputs.mysql-host }}
+        MYSQL_PORT: ${{ inputs.mysql-port }}
+        MYSQL_USER: ${{ inputs.mysql-user }}
+        MYSQL_PASSWORD: ${{ inputs.mysql-password }}
+        MYSQL_DATABASE: ${{ inputs.mysql-database }}
+        MYSQL_SYMBOLS_TABLE: ${{ inputs.mysql-symbols-table }}
+      run: |
+        npm run ci-index -- \
+          --changed "${{ steps.changed-files.outputs.changed_files }}" \
+          --deleted "${{ steps.changed-files.outputs.deleted_files }}" \
+          --renamed "${{ steps.changed-files.outputs.renamed_files }}"
+      shell: bash
