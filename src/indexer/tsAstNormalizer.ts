@@ -1,5 +1,5 @@
 /**
- * astNormalizer.ts
+ * tsAstNormalizer.ts
  * 对 ts-morph Node 做语义级标准化，生成 semantic_hash。
  *
  * 去掉：参数名、泛型参数名、函数体实现、空白格式、字面量值

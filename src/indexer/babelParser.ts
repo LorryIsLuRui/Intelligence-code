@@ -10,6 +10,12 @@ import {
     inferCategoryFromPath,
     inferCategoryFromName,
 } from './heuristics.js';
+import { computeFileHash } from './tsAstNormalizer.js';
+import { computeSemanticHashJs } from './jsAstNormalizer.js';
+
+interface IndexedSymbolRowOut extends IndexedSymbolRow {
+    node: bt.Node;
+}
 
 /** 从 JS 文件内容解析导出的代码块 */
 export function parseJsFile(
@@ -17,7 +23,7 @@ export function parseJsFile(
     content: string,
     projectRoot: string
 ): IndexedSymbolRow[] {
-    const out: IndexedSymbolRow[] = [];
+    const out: IndexedSymbolRowOut[] = [];
     const isJsx = filePath.endsWith('.jsx') || filePath.endsWith('.tsx');
 
     let ast: bt.File;
@@ -64,8 +70,23 @@ export function parseJsFile(
             out.push(...rows);
         }
     }
-
-    return out;
+    // 第三轮：更新content、file_hash、semantic_hash 字段
+    const outWithTwoHash = out.map((o) => {
+        const [semantic_hash, stableStr] = computeSemanticHashJs(o);
+        const { name, type, description, meta, category, path } = o;
+        return {
+            name,
+            type,
+            category,
+            path,
+            description,
+            meta,
+            content: stableStr,
+            file_hash: computeFileHash(content),
+            semantic_hash,
+        };
+    });
+    return outWithTwoHash;
 }
 
 /** 处理导出的声明 */
@@ -74,8 +95,8 @@ function processStatement(
     filePath: string,
     isJsx: boolean,
     projectRoot: string
-): IndexedSymbolRow[] {
-    const out: IndexedSymbolRow[] = [];
+): IndexedSymbolRowOut[] {
+    const out: IndexedSymbolRowOut[] = [];
 
     // 处理命名导出: export function Foo() {}
     if (bt.isExportNamedDeclaration(stmt)) {
@@ -276,8 +297,8 @@ function scanAllDeclarations(
     filePath: string,
     isJsx: boolean,
     projectRoot: string
-): IndexedSymbolRow[] {
-    const out: IndexedSymbolRow[] = [];
+): IndexedSymbolRowOut[] {
+    const out: IndexedSymbolRowOut[] = [];
 
     // 函数声明: function foo() {}
     if (bt.isFunctionDeclaration(stmt)) {
@@ -356,7 +377,7 @@ function createRowFromFunction(
     filePath: string,
     projectRoot: string,
     isJsx: boolean
-): IndexedSymbolRow {
+): IndexedSymbolRowOut {
     const relPath = getRelativePathForDisplay(projectRoot, filePath);
     const category =
         inferCategoryFromPath(filePath) || inferCategoryFromName(name);
@@ -371,7 +392,7 @@ function createRowFromFunction(
     // 4. 其他 = function
     const type: SymbolType = name.toLowerCase().includes('use')
         ? 'hook'
-        : isJsx && /^[A-Z]/.test(name)
+        : isJsx || /^[A-Z]/.test(name)
           ? 'component'
           : 'function';
 
@@ -398,6 +419,7 @@ function createRowFromFunction(
         },
         file_hash: '',
         semantic_hash: '',
+        node: decl,
     };
 }
 
@@ -406,7 +428,7 @@ function createRowFromClass(
     _decl: bt.ClassDeclaration,
     filePath: string,
     projectRoot: string
-): IndexedSymbolRow {
+): IndexedSymbolRowOut {
     const relPath = getRelativePathForDisplay(projectRoot, filePath);
     const category = inferCategoryFromPath(filePath);
 
@@ -424,6 +446,7 @@ function createRowFromClass(
         meta: {},
         file_hash: '',
         semantic_hash: '',
+        node: _decl,
     };
 }
 

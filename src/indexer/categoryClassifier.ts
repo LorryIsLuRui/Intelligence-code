@@ -20,6 +20,7 @@ const CATEGORIES = [
     'math',
     'hook',
     'utils',
+    'component',
     'service',
 ] as const;
 type Category = (typeof CATEGORIES)[number];
@@ -45,9 +46,9 @@ export async function initCategoryEmbeddings(): Promise<void> {
 // 3. embedding 层
 const EMBEDDING_THRESHOLD = 0.5;
 
+// TODO: 这里有问题，embedding是语义模板向量，categoryEmbeddingsCache是单个词的向量，相似度必然是<0.3
 function categoryFromEmbedding(embedding: number[]): Category | null {
     if (!categoryEmbeddingsCache) return null;
-
     let best: Category = 'utils';
     let maxScore = -Infinity;
     for (const c of categoryEmbeddingsCache) {
@@ -88,7 +89,7 @@ async function categoryFromLLM(
         const body = {
             model: OLLAMA_MODEL,
             messages: [{ role: 'user', content: prompt }],
-            temperature: 0.3,
+            temperature: 0.4,
             stream: false,
         };
         const res = await fetch(OLLAMA_URL, {
@@ -101,7 +102,6 @@ async function categoryFromLLM(
             ?.trim()
             ?.toLowerCase();
         const category = CATEGORIES.find((c) => content.includes(c));
-        console.error(`category llm fallback===:${category}`);
         if (category) {
             llmCategoryCache.set(cacheKey, { category, timestamp: Date.now() });
             return category;
@@ -118,16 +118,19 @@ export async function resolveCategory(
     vecs: number[][]
 ): Promise<Array<IndexedSymbolRow>> {
     const pros = rows.map(async (r, i) => {
-        const { name, type, path, description, content, meta } = r;
+        const { name } = r;
         const ruleCategory =
             inferCategoryFromPath(r.path) || inferCategoryFromName(name);
+        console.error(`===from ruleCategory`, name, ruleCategory);
         if (ruleCategory) {
             return {
                 ...r,
                 category: ruleCategory,
             };
         }
+        // TODO: 这里有问题，embedding是语义模板向量，categoryEmbeddingsCache是单个词的向量，相似度必然是<0.3
         const emd = categoryFromEmbedding(vecs[i]);
+        console.error(`===from categoryFromEmbedding`, name, emd);
         if (emd) {
             return {
                 ...r,
@@ -135,6 +138,7 @@ export async function resolveCategory(
             };
         }
         const cateLlm = await categoryFromLLM(r.content);
+        console.error(`===from categoryFromLLM`, name, cateLlm);
         return {
             ...r,
             category: cateLlm,

@@ -24,7 +24,7 @@ import {
     inferCategoryFromName,
 } from './heuristics.js';
 import { parseJsFile } from './babelParser.js';
-import { computeFileHash, computeSemanticHash } from './astNormalizer.js';
+import { computeFileHash, computeSemanticHash } from './tsAstNormalizer.js';
 
 const CALLERS_LIMIT = 20;
 
