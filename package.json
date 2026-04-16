@@ -10,14 +10,14 @@
     ],
     "bin": {
         "code-intelligence-mcp": "./dist/index.js",
-        "code-intelligence-index": "./dist/cli/index-codebase.js"
+        "code-intelligence-index": "./dist/cli/index-codebase-cli.js"
     },
     "scripts": {
         "dev": "tsx watch --clear-screen=false --exclude node_modules --exclude dist src/index.ts",
         "dev:mcp": "node ./scripts/mcp-dev-watch.mjs",
         "build": "tsc -p tsconfig.json",
         "start": "node dist/index.js",
-        "index": "tsx src/cli/index-codebase.ts",
+        "index": "tsx src/cli/index-codebase-cli.ts",
         "ci-index": "tsx src/cli/ci-index-cli.ts",
         "worker:embedding": "tsx src/cli/embedding-worker-cli.ts",
         "embedding:dev": "cd embedding-service && python3 -m uvicorn app:app --host 127.0.0.1 --port 8765",

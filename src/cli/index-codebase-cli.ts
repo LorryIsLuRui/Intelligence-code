@@ -17,8 +17,10 @@ import { runReindex } from '../services/reindex.js';
  * 进程退出码：成功 `0`，无 MySQL 或异常 `1`。
  */
 async function main() {
+    // const projectRoot = resolve(process.env.INDEX_ROOT ?? process.cwd());
+    loadProjectDotenv(resolve(process.env.INDEX_ROOT ?? process.cwd()));
     const projectRoot = resolve(process.env.INDEX_ROOT ?? process.cwd());
-    loadProjectDotenv(projectRoot);
+    console.error(projectRoot, process.env.INDEX_ROOT);
     console.error(
         `MYSQL_HOST=${process.env.MYSQL_HOST}` +
             `[index] projectRoot=${projectRoot}`
