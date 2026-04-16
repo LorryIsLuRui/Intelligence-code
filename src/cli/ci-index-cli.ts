@@ -19,29 +19,48 @@ async function main() {
     let deletedFiles: string[] = [];
     let renamedFiles: { from: string; to: string }[] = [];
 
+    /** 解析 --key value 和 --key=value 两种格式 */
+    function getArgValue(key: string, idx: number): [string | null, number] {
+        const arg = args[idx];
+        const prefix = `--${key}=`;
+        if (arg.startsWith(prefix)) return [arg.slice(prefix.length), idx];
+        if (arg === `--${key}` && idx + 1 < args.length)
+            return [args[idx + 1], idx + 1];
+        return [null, idx];
+    }
+
     for (let i = 0; i < args.length; i++) {
         const arg = args[i];
-        if (arg === '--changed' && i + 1 < args.length) {
-            changedFiles = args[i + 1]
-                .split(',')
-                .map((s) => s.trim())
-                .filter(Boolean);
-            i++;
-        } else if (arg === '--deleted' && i + 1 < args.length) {
-            deletedFiles = args[i + 1]
-                .split(',')
-                .map((s) => s.trim())
-                .filter(Boolean);
-            i++;
-        } else if (arg === '--renamed' && i + 1 < args.length) {
-            renamedFiles = args[i + 1]
-                .split(',')
-                .map((s) => {
-                    const [from, to] = s.split(':');
-                    return { from: from.trim(), to: to.trim() };
-                })
-                .filter((r) => r.from && r.to);
-            i++;
+        if (arg === '--changed' || arg.startsWith('--changed=')) {
+            const [val, next] = getArgValue('changed', i);
+            if (val) {
+                changedFiles = val
+                    .split(',')
+                    .map((s) => s.trim())
+                    .filter(Boolean);
+                i = next;
+            }
+        } else if (arg === '--deleted' || arg.startsWith('--deleted=')) {
+            const [val, next] = getArgValue('deleted', i);
+            if (val) {
+                deletedFiles = val
+                    .split(',')
+                    .map((s) => s.trim())
+                    .filter(Boolean);
+                i = next;
+            }
+        } else if (arg === '--renamed' || arg.startsWith('--renamed=')) {
+            const [val, next] = getArgValue('renamed', i);
+            if (val) {
+                renamedFiles = val
+                    .split(',')
+                    .map((s) => {
+                        const [from, to] = s.split(':');
+                        return { from: from.trim(), to: to.trim() };
+                    })
+                    .filter((r) => r.from && r.to);
+                i = next;
+            }
         }
     }
 

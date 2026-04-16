@@ -94,6 +94,8 @@ export const env = {
     mysqlSymbolsTable: process.env.MYSQL_SYMBOLS_TABLE ?? 'symbols',
     /** Phase 5：指向 Python FastAPI 嵌入服务根 URL，如 http://127.0.0.1:8765 */
     embeddingServiceUrl: (process.env.EMBEDDING_SERVICE_URL ?? '').trim(),
+    /** Redis 连接 URL，供 BullMQ embedding worker 使用 */
+    redisUrl: process.env.REDIS_URL ?? 'redis://127.0.0.1:6379',
 };
 
 export function validateEnv(): void {

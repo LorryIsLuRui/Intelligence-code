@@ -3,7 +3,7 @@
 CREATE TABLE IF NOT EXISTS symbols (
   id INT PRIMARY KEY AUTO_INCREMENT,
   name VARCHAR(255) NOT NULL,
-  type ENUM('component', 'util', 'selector', 'type') NOT NULL,
+  type ENUM('component', 'function', 'type', 'class', 'interface', 'hook') NOT NULL,
   category VARCHAR(255) NULL,
   path TEXT NOT NULL,
   description TEXT NULL,
@@ -15,10 +15,11 @@ CREATE TABLE IF NOT EXISTS symbols (
   updated_user VARCHAR(255) NOT NULL DEFAULT 'LorryIsLuRui',
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  UNIQUE KEY uk_symbols_path_name (path(512), name(255))
-);
-
-CREATE TABLE IF NOT EXISTS dependencies (
-  from_id INT NOT NULL,
-  to_id INT NOT NULL
+  file_hash VARCHAR(64) NULL COMMENT '文件内容 SHA256',
+  semantic_hash VARCHAR(64) NULL COMMENT 'normalized AST 语义模板 SHA256',
+  status TINYINT NOT NULL DEFAULT 1 COMMENT '状态: 0-offline 1-pending 2-online 3-error',
+  UNIQUE KEY uk_symbols_path_name (path(512), name(255)),
+  INDEX idx_file_hash (file_hash),
+  INDEX idx_semantic_hash (semantic_hash),
+  INDEX idx_status (status)
 );

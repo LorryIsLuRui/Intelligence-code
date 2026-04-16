@@ -74,7 +74,7 @@ export async function runReindex(
             const client = createEmbeddingClient(embeddingServiceUrl);
             // 先实现ts语义模板,js保留原逻辑
             const texts = rows.map(
-                (row) => row.semantic_hash ?? indexedRowToEmbedText(row)
+                (row) => row.content ?? indexedRowToEmbedText(row)
             );
             const vecs = await embedAll(client, texts);
             // 生成category

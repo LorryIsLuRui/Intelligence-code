@@ -32,5 +32,17 @@ services:
             retries: 25
             start_period: 30s
 
+    redis:
+        image: redis:7-alpine
+        container_name: intelligence-redis
+        restart: unless-stopped
+        ports:
+            - '6379:6379'
+        healthcheck:
+            test: ['CMD', 'redis-cli', 'ping']
+            interval: 5s
+            timeout: 3s
+            retries: 10
+
 volumes:
     intelligence-mysql-data:
