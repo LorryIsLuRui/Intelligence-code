@@ -1,100 +1,170 @@
-import { resolve } from 'node:path';
+import { resolve, join } from 'node:path';
+import { readFileSync } from 'node:fs';
+import fg from 'fast-glob';
 import { env, loadProjectDotenv } from '../config/env.js';
 import { getMySqlPool } from '../db/mysql.js';
-import { indexedRowToEmbedText } from '../indexer/embedText.js';
-import { indexProject } from '../indexer/indexProject.js';
+import { indexProject, DEFAULT_IGNORE } from '../indexer/indexProject.js';
 import { upsertSymbols } from '../indexer/persistSymbols.js';
+import { computeFileHash } from '../indexer/tsAstNormalizer.js';
+import { getRelativePathForDisplay } from '../indexer/heuristics.js';
 import {
-    initCategoryEmbeddings,
-    resolveCategory,
-} from '../indexer/categoryClassifier.js';
-import {
-    createEmbeddingClient,
-    embedAll,
-} from '../services/embeddingClient.js';
+    enqueueEmbeddingBatch,
+    closeEmbeddingQueue,
+} from '../services/embeddingQueue.js';
+import { SYMBOL_STATUS } from '../config/symbolStatus.js';
 
 export interface ReindexOptions {
     projectRoot?: string;
     globPatterns?: string[];
     ignore?: string[];
     dryRun?: boolean;
+    /**
+     * 强制全量重建模式。
+     * 用于：embedding 模型升级、语义模板逻辑变更、清理漂移/僵尸数据。
+     * 效果：跳过 file_hash 过滤（全量解析），清空已有 embedding，全部重新入队。
+     * 注意：此时不应复用任何缓存，file_hash 同样无效。
+     */
+    forceRebuild?: boolean;
 }
 
 export interface ReindexResult {
     projectRoot: string;
     extractedCount: number;
+    /** file_hash 未变，跳过 AST 解析的文件数 */
+    skippedFiles: number;
+    /** 入队给 worker 处理 embedding 的 semantic_hash 数（去重后） */
+    enqueuedCount: number;
     upserted: boolean;
-    /** Phase 5：是否尝试写入了向量（需 EMBEDDING_SERVICE_URL + 列存在） */
-    embeddingsComputed: boolean;
 }
 
 export async function runReindex(
     options: ReindexOptions = {}
 ): Promise<ReindexResult> {
     const projectRoot = resolve(options.projectRoot ?? process.cwd());
-    const { dryRun = false } = options;
+    const { dryRun = false, forceRebuild = false } = options;
 
-    // 1️ 加载第三方 .env：只覆盖未定义的变量 → 保留 MCP Server 自身配置
     loadProjectDotenv(projectRoot);
-
-    // 2️ 打印生效的环境变量（便于调试）
     console.error(
-        `[reindex] projectRoot=${projectRoot}, dryRun=${dryRun}, ` +
-            `MYSQL_HOST=${process.env.MYSQL_HOST}`
+        `[reindex] projectRoot=${projectRoot}, dryRun=${dryRun}, forceRebuild=${forceRebuild}, MYSQL_HOST=${process.env.MYSQL_HOST}`
     );
-
-    // 3️⃣ 只有需要写入数据库时才检查 MySQL 并建立连接
-    const embeddingServiceUrl = process.env.EMBEDDING_SERVICE_URL;
-    if (!dryRun && embeddingServiceUrl) {
-        // 初始化 category embeddings
-        await initCategoryEmbeddings();
-    }
 
     let pool: Awaited<ReturnType<typeof getMySqlPool>> | null = null;
     if (!dryRun) {
         pool = getMySqlPool();
-        await pool!.query('SELECT 1'); // 测试连接
+        await pool!.query('SELECT 1');
         console.error('[reindex] MySQL connection successful');
     }
 
-    let rows = await indexProject({
-        projectRoot,
-        globPatterns: options.globPatterns,
-        ignore: options.ignore,
-    });
-    console.error(
-        `[reindex] extracted ${rows.length} symbol(s) from ${projectRoot}`
+    // ─── 1. glob 解析出全量文件列表（绝对路径）──────────────────────────
+    const ignore = [...DEFAULT_IGNORE, ...(options.ignore ?? [])];
+    const patterns = (options.globPatterns ?? ['src/**/*.{ts,tsx}']).map((p) =>
+        p.startsWith('/') ? p : join(projectRoot, p).replace(/\\/g, '/')
     );
+    const allFiles = await fg(patterns, {
+        absolute: true,
+        ignore,
+        onlyFiles: true,
+        dot: false,
+    });
+    console.error(`[reindex] glob found ${allFiles.length} file(s)`);
 
-    let embeddingsComputed = false;
-    let embeddingPayload: (number[] | null)[] | undefined;
+    // ─── 2. file_hash 过滤：跳过 AST 未变的文件（CPU 优化）────────────────
+    // forceRebuild 时跳过此过滤，file_hash 不可复用（模板/模型变更时相同文件产出不同 content）
+    let filesToIndex = allFiles;
+    let skippedFiles = 0;
 
-    if (!options.dryRun && rows.length > 0 && embeddingServiceUrl) {
-        try {
-            const client = createEmbeddingClient(embeddingServiceUrl);
-            // 先实现ts语义模板,js保留原逻辑
-            const texts = rows.map(
-                (row) => row.content ?? indexedRowToEmbedText(row)
-            );
-            const vecs = await embedAll(client, texts);
-            // 生成category
-            rows = await resolveCategory(rows, vecs);
-            embeddingPayload = vecs;
-            embeddingsComputed = true;
-        } catch (err) {
-            console.error('[reindex] embedding skipped (service error):', err);
-            embeddingPayload = rows.map(() => null);
+    if (!forceRebuild && pool && allFiles.length > 0) {
+        // 计算所有文件当前 hash
+        const currentFileHashes = new Map<string, string>(); // relPath → hash
+        for (const absPath of allFiles) {
+            const content = readFileSync(absPath, 'utf-8');
+            const relPath = getRelativePathForDisplay(projectRoot, absPath);
+            currentFileHashes.set(relPath, computeFileHash(content));
         }
+
+        // 一次性批量查 DB 已有的 file_hash
+        const relPaths = [...currentFileHashes.keys()];
+        const [dbRows] = await pool!.query<any[]>(
+            `SELECT DISTINCT path, file_hash FROM ${env.mysqlSymbolsTable}
+             WHERE path IN (?) AND file_hash IS NOT NULL`,
+            [relPaths]
+        );
+        const dbFileHash = new Map<string, string>(
+            dbRows.map((r: any) => [r.path, r.file_hash])
+        );
+
+        filesToIndex = allFiles.filter((absPath) => {
+            const relPath = getRelativePathForDisplay(projectRoot, absPath);
+            return currentFileHashes.get(relPath) !== dbFileHash.get(relPath);
+        });
+        skippedFiles = allFiles.length - filesToIndex.length;
+        console.error(
+            `[reindex] file_hash: ${skippedFiles} unchanged (skipped), ${filesToIndex.length} changed (to parse)`
+        );
+    } else if (forceRebuild) {
+        console.error(
+            `[reindex] forceRebuild=true, skipping file_hash filter — parsing all ${allFiles.length} file(s)`
+        );
     }
 
-    if (!options.dryRun) {
-        await upsertSymbols(pool!, rows, embeddingPayload);
+    if (filesToIndex.length === 0) {
+        console.error('[reindex] all files unchanged, nothing to do');
+        return {
+            projectRoot,
+            extractedCount: 0,
+            skippedFiles,
+            enqueuedCount: 0,
+            upserted: false,
+        };
+    }
+
+    // ─── 3. 只对变更文件做 AST 解析 ──────────────────────────────────
+    const rows = await indexProject({
+        projectRoot,
+        globPatterns: filesToIndex,
+    });
+    console.error(
+        `[reindex] extracted ${rows.length} symbol(s) from ${filesToIndex.length} changed file(s)`
+    );
+
+    // ─── 4. 写库（全部 pending）→ 入队，worker 异步处理 embedding + category ──
+    const nullPayload = rows.map(() => null as number[] | null);
+    const pendingHashes = [
+        ...new Set(
+            rows.map((r) => r.semantic_hash).filter(Boolean) as string[]
+        ),
+    ];
+
+    if (!dryRun) {
+        // forceRebuild：先清空 DB 中已有的 embedding，使 worker cache check 必然 miss
+        if (forceRebuild && pendingHashes.length > 0) {
+            await pool!.query(
+                `UPDATE ${env.mysqlSymbolsTable}
+                 SET embedding = NULL, status = ?
+                 WHERE semantic_hash IN (?)`,
+                [SYMBOL_STATUS.PENDING, pendingHashes]
+            );
+            console.error(
+                `[reindex] forceRebuild: cleared embeddings for ${pendingHashes.length} semantic_hash(es)`
+            );
+        }
+
+        await upsertSymbols(pool!, rows, nullPayload);
+
+        if (pendingHashes.length > 0) {
+            await enqueueEmbeddingBatch(pendingHashes);
+            console.error(
+                `[reindex] enqueued ${pendingHashes.length} semantic_hash(es) → worker will handle embedding asynchronously`
+            );
+        }
+        await closeEmbeddingQueue();
     }
 
     return {
         projectRoot,
         extractedCount: rows.length,
-        upserted: !options.dryRun,
-        embeddingsComputed,
+        skippedFiles,
+        enqueuedCount: pendingHashes.length,
+        upserted: !dryRun,
     };
 }

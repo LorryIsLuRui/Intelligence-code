@@ -14,7 +14,7 @@
  * 大仓分片：
  * - 直接启动多个 worker 进程（同一 Redis）即可水平扩展，BullMQ 原生分布式协调
  */
-import { Worker } from 'bullmq';
+import { Worker, QueueEvents } from 'bullmq';
 import type { Job } from 'bullmq';
 import { Redis } from 'ioredis';
 import type { Pool } from 'mysql2/promise';
@@ -133,16 +133,25 @@ async function processEmbedJob(job: Job<EmbedJob>, pool: Pool): Promise<void> {
 }
 
 /**
- * 启动 embedding worker，返回 Worker 实例（可用于优雅关闭）。
+ * 启动 embedding worker，返回包含 stop() 的句柄。
  */
 export async function startEmbeddingWorker(
     opts: WorkerOptions = {}
-): Promise<Worker> {
+): Promise<{ worker: Worker; stop: () => Promise<void> }> {
     const { concurrency = 5, rpmLimit = 100 } = opts;
 
     const connection = new Redis(env.redisUrl, {
         maxRetriesPerRequest: null,
         enableReadyCheck: false,
+    });
+
+    // 独立连接监听队列事件（BullMQ 要求不共用 Worker 连接）
+    const eventsConnection = new Redis(env.redisUrl, {
+        maxRetriesPerRequest: null,
+        enableReadyCheck: false,
+    });
+    const queueEvents = new QueueEvents('embedding', {
+        connection: eventsConnection,
     });
 
     const pool = getMySqlPool();
@@ -182,5 +191,17 @@ export async function startEmbeddingWorker(
         console.error(`[worker] error: ${err.message}`);
     });
 
-    return worker;
+    // 队列清空时打完成信号（全量 reindex 入队后监听，确认所有 embedding 已处理）
+    queueEvents.on('drained', () => {
+        console.error(
+            '[worker] ✅ all embedding jobs processed — queue is now empty'
+        );
+    });
+
+    const stop = async () => {
+        await worker.close();
+        await queueEvents.close();
+    };
+
+    return { worker, stop };
 }

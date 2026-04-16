@@ -26,7 +26,7 @@ loadProjectDotenv(projectRoot);
 const concurrency = Number(process.env.WORKER_CONCURRENCY ?? '5');
 const rpmLimit = Number(process.env.WORKER_RPM_LIMIT ?? '100');
 
-const worker = await startEmbeddingWorker({ concurrency, rpmLimit });
+const { worker, stop } = await startEmbeddingWorker({ concurrency, rpmLimit });
 
 console.error(
     `[embedding-worker] started  concurrency=${concurrency}  rpm_limit=${rpmLimit}`
@@ -36,7 +36,7 @@ console.error(
 for (const sig of ['SIGINT', 'SIGTERM'] as const) {
     process.on(sig, async () => {
         console.error('[embedding-worker] shutting down…');
-        await worker.close();
+        await stop();
         process.exit(0);
     });
 }

@@ -35,14 +35,18 @@ async function main() {
         ? process.env.INDEX_IGNORE.split(',').map((s) => s.trim())
         : undefined;
 
+    const forceRebuild = process.argv.includes('--force-rebuild');
+
     const result = await runReindex({
         projectRoot,
         globPatterns,
         ignore,
         dryRun: false,
+        forceRebuild,
     });
-    console.error(`[index] extracted ${result.extractedCount} symbol(s)`);
-    console.error(`[index] embeddings computed: ${result.embeddingsComputed}`);
+    console.error(
+        `[index] extracted ${result.extractedCount} symbol(s), enqueued ${result.enqueuedCount} for embedding`
+    );
     console.error('[index] upserted into MySQL, success:', result.upserted);
 }
 
