@@ -8,7 +8,10 @@ export const getSymbolDetailInput = z.object({
 export function createGetSymbolDetailTool(repository: SymbolRepository) {
     return {
         name: 'get_symbol_detail',
-        description: '按名称获取单个代码块的完整详情。',
+        description:
+            '获取单个代码块的完整详情（含源码、参数类型、调用关系、副作用）。\n' +
+            '仅在以下情况调用：search_symbols 返回的摘要信息不足以判断是否适用（如签名模糊、副作用不明确）。\n' +
+            '通常对 top 1-3 候选调用，不要对所有结果批量调用。',
         inputSchema: getSymbolDetailInput.shape,
         handler: async (input: z.infer<typeof getSymbolDetailInput>) => {
             const symbol = await repository.getByName(input.name);

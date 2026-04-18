@@ -15,7 +15,7 @@ const REUSABLE_CODE_ADVISOR_MARKDOWN = `# 可复用代码推荐
 
 当用户需要可复用代码或实现类需求时，按顺序执行：
 
-1. 调用 search_symbols 检索候选，type 根据用户需求传（component/util/selector/type）
+1. 调用 search_symbols 检索候选，type 根据用户需求传（component/function/hook/class/type/interface）；描述功能意图时设置 semantic=true
 2. 如果用户指定了结构过滤条件（props/params/properties/hooks），额外调用 search_by_structure 做结构匹配
 3. 先 search_symbols(limit=20) 拉候选，再对 Top 3 调用 get_symbol_detail 做深度判断
 4. 若仅凭签名/摘要无法判断，对最相关的若干候选调用 get_symbol_detail 获取详情
@@ -24,9 +24,25 @@ const REUSABLE_CODE_ADVISOR_MARKDOWN = `# 可复用代码推荐
    - **API 是否简单**、入参是否合适
    - **依赖与副作用**风险
    - **复用安全性**（稳定性、耦合度、是否便于扩展）
-6. 给出**唯一首选**推荐，并说明理由，同时使用 **AskUserQuestion **工具,提供两个选项: 
+6. 给出**唯一首选**推荐，并说明理由，同时使用 **AskUserQuestion** 工具，提供两个选项：
    - 采纳推荐
    - 取消
+7. 用户选择"采纳推荐"后，立即调用 inc_usage 工具记录该行为（symbolId 从搜索结果的 id 字段获取），不要遗漏此步骤。
+
+## 不适用场景
+
+以下情况不要调用搜索工具：
+- 用户只是问代码如何写（概念性问题），不需要检索已有实现
+- 用户明确说"新建一个"、"自己实现"、"不用已有的"
+- 查询过于通用（如只说"utils"），先与用户确认具体需求再搜索
+
+## 搜索结果判断
+
+根据 semanticSimilarity 决定推荐置信度：
+- **> 0.85**：高置信度，可直接推荐
+- **0.6 – 0.85**：中等置信度，需结合 description 和 get_symbol_detail 综合判断
+- **< 0.6**：低置信度，说明可能无合适实现，明确告知用户
+- **空结果**：明确说"未找到已有实现"，不要凭空推荐
 
 ## 回复结构
 
@@ -38,19 +54,13 @@ const REUSABLE_CODE_ADVISOR_MARKDOWN = `# 可复用代码推荐
 - **理由：** 1～3 条要点
 - **其他候选：** 简要列出及取舍（同步标注副作用）
 - **用法提示：** 结合用户场景的最小集成说明
-- **是否采纳：** 展示两个选项: 选项1.采纳推荐 选项2.取消。等待用户确认
+- **是否采纳：** 展示两个选项：选项1. 采纳推荐  选项2. 取消。等待用户确认
 
 ## 约束
 
 - 优先推荐已有可复用代码块，避免轻易建议新写一套。
 - 若无合适代码块，明确说明，并给出最接近的选项及差距。
 - 推理简洁，面向落地实现。
-
-## 使用反馈
-
-当选择‘采纳推荐’必须调用 inc_usage 工具记录采纳行为，调用格式如下：
-“inc_usage({ symbolId: <选中的代码块 id> })”
-其中 symbolId 从 search_symbols 或 search_by_structure 返回结果的 id 字段获取。这条记录会用于后续排序优化。
 
 ## 更多示例
 

@@ -17,7 +17,9 @@ export function createSearchByStructureTool(repository: SymbolRepository) {
     return {
         name: 'search_by_structure',
         description:
-            '通过结构化字段（如 props/params/properties/hooks）搜索代码块，适用于 API 形态的查询。',
+            '按代码块的结构字段（props/params/hooks）检索，适合已知接口形态时使用。\n' +
+            '示例：需要一个接受 value、onChange、error 三个 prop 的输入组件 → fields: ["value", "onChange", "error"], type: "component"\n' +
+            '与 search_symbols 配合：先语义检索候选，再用本工具做 API 结构过滤以精确匹配。',
         inputSchema: searchByStructureInput.shape,
         handler: async (input: z.infer<typeof searchByStructureInput>) => {
             const rows = await repository.searchByStructure(input.fields, {

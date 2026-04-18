@@ -19,7 +19,11 @@ export function createSearchSymbolsTool(repository: SymbolRepository) {
     return {
         name: 'search_symbols',
         description:
-            '通过关键词和可选的类型搜索代码块。设置 semantic=true 可进行自然语言/意图式搜索（此功能需要 embedding 服务 + 已索引的向量）。',
+            '搜索项目中已有的可复用代码块（函数、组件、Hook、类型等）。在生成新代码之前必须先调用本工具，确认是否已有实现。\n' +
+            '- 有明确名称时（如 "useDebounce"）：semantic=false（默认），直接关键词检索\n' +
+            '- 描述功能意图时（如 "防抖"、"处理表单提交"）：semantic=true，进行语义检索（需 embedding 服务已就绪）\n' +
+            '- 不确定 type 时省略该参数，不要猜测\n' +
+            '- 返回结果含 semanticSimilarity 字段：>0.85 高置信度可直接推荐，0.6-0.85 需结合 description 判断，<0.6 说明可能无合适实现',
         inputSchema: searchSymbolsInput.shape,
         handler: async (input: z.infer<typeof searchSymbolsInput>) => {
             if (input.semantic) {
