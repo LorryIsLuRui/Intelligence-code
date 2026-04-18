@@ -1,6 +1,6 @@
 {
     "name": "@lorrylurui/code-intelligence-mcp",
-    "version": "1.1.15",
+    "version": "1.2.0",
     "private": false,
     "description": "MCP server 提供仓库内可复用代码块（ts/tsx/js/jsx/css/less）的索引和查询能力，支持基于代码上下文的智能推荐。",
     "type": "module",
