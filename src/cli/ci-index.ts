@@ -1,5 +1,5 @@
 // CI增量索引：处理changed files和deleted files
-import { env, loadProjectDotenv } from '../config/env.js';
+import { env } from '../config/env.js';
 import { getPool } from '../db/postgres.js';
 import { indexProject } from '../indexer/indexProject.js';
 import {
@@ -21,7 +21,6 @@ export interface IncrementalIndexOptions {
 export async function runIncrementalIndex(opts: IncrementalIndexOptions) {
     const { projectRoot, changedFiles, deletedFiles, renamedFiles = [] } = opts;
 
-    loadProjectDotenv(projectRoot);
     const pool = getPool();
     const tableName = env.symbolsTable;
 
@@ -94,7 +93,7 @@ export async function runIncrementalIndex(opts: IncrementalIndexOptions) {
             ...new Set(rows.map((r) => r.semantic_hash).filter(Boolean)),
         ] as string[];
         if (hashes.length > 0) {
-            await enqueueEmbeddingBatch(hashes);
+            await enqueueEmbeddingBatch(hashes, env.symbolsTable);
             console.error(
                 `[ci-index] enqueued ${hashes.length} unique semantic hashes for embedding`
             );

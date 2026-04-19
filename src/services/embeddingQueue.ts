@@ -28,10 +28,13 @@ function getQueue(): Queue {
 }
 
 /** 单个 semanticHash 入队 */
-export async function enqueueEmbedding(semanticHash: string): Promise<void> {
+export async function enqueueEmbedding(
+    semanticHash: string,
+    symbolsTable?: string
+): Promise<void> {
     await getQueue().add(
         'embed',
-        { semanticHash },
+        { semanticHash, symbolsTable: symbolsTable ?? env.symbolsTable },
         {
             attempts: 5,
             backoff: { type: 'exponential', delay: 5_000 },
@@ -44,12 +47,14 @@ export async function enqueueEmbedding(semanticHash: string): Promise<void> {
  * worker 消费时查 DB 决定是否真正调 embedding API。
  */
 export async function enqueueEmbeddingBatch(
-    semanticHashes: string[]
+    semanticHashes: string[],
+    symbolsTable?: string
 ): Promise<void> {
+    const table = symbolsTable ?? env.symbolsTable;
     const queue = getQueue();
     const jobs = semanticHashes.map((hash) => ({
         name: 'embed',
-        data: { semanticHash: hash },
+        data: { semanticHash: hash, symbolsTable: table },
         opts: {
             attempts: 5,
             backoff: { type: 'exponential' as const, delay: 5_000 },

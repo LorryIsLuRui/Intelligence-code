@@ -1,8 +1,9 @@
 import { resolve, join } from 'node:path';
 import { readFileSync } from 'node:fs';
 import fg from 'fast-glob';
-import { env, loadProjectDotenv } from '../config/env.js';
+import { env } from '../config/env.js';
 import { getPool } from '../db/postgres.js';
+import { getAllTableSQLs } from '../db/schema.js';
 import { indexProject, DEFAULT_IGNORE } from '../indexer/indexProject.js';
 import { upsertSymbols } from '../indexer/persistSymbols.js';
 import { computeFileHash } from '../indexer/tsAstNormalizer.js';
@@ -43,9 +44,8 @@ export async function runReindex(
     const projectRoot = resolve(options.projectRoot ?? process.cwd());
     const { dryRun = false, forceRebuild = false } = options;
 
-    loadProjectDotenv(projectRoot);
     console.error(
-        `[reindex] projectRoot=${projectRoot}, dryRun=${dryRun}, forceRebuild=${forceRebuild}, PG_URL=${process.env.PG_URL ? '(set)' : '(not set)'}`
+        `[reindex] projectRoot=${projectRoot}, dryRun=${dryRun}, forceRebuild=${forceRebuild}, PG_URL=${process.env.PG_URL ? '(set)' : '(not set)'}, SYMBOLS_TABLE=${env.symbolsTable}`
     );
 
     let pool: ReturnType<typeof getPool> | null = null;
@@ -53,6 +53,12 @@ export async function runReindex(
         pool = getPool();
         await pool.query('SELECT 1');
         console.error('[reindex] PostgreSQL connection successful');
+
+        // 确保 extension + table + indexes 存在（幂等，多租户表名安全）
+        for (const sql of getAllTableSQLs()) {
+            await pool.query(sql);
+        }
+        console.error(`[reindex] schema ready: ${env.symbolsTable}`);
     }
 
     // ─── 1. glob 解析出全量文件列表（绝对路径）──────────────────────────
@@ -155,7 +161,7 @@ export async function runReindex(
         await upsertSymbols(pool!, rows, nullPayload);
 
         if (pendingHashes.length > 0) {
-            await enqueueEmbeddingBatch(pendingHashes);
+            await enqueueEmbeddingBatch(pendingHashes, env.symbolsTable);
             console.error(
                 `[reindex] enqueued ${pendingHashes.length} semantic_hash(es) → worker will handle embedding asynchronously`
             );

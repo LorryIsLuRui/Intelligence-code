@@ -8,7 +8,7 @@
  * 3. 本地的 .env（最低优先级，提供默认值）
  */
 import { resolve } from 'node:path';
-import { loadProjectDotenv } from '../config/env.js';
+import { CLI_KEYS, loadProjectDotenv } from '../config/env.js';
 import { runReindex } from '../services/reindex.js';
 
 /**
@@ -17,13 +17,20 @@ import { runReindex } from '../services/reindex.js';
  * 进程退出码：成功 `0`，连接失败或异常 `1`。
  */
 async function main() {
-    // const projectRoot = resolve(process.env.INDEX_ROOT ?? process.cwd());
-    loadProjectDotenv(resolve(process.env.INDEX_ROOT ?? process.cwd()));
-    const projectRoot = resolve(process.env.INDEX_ROOT ?? process.cwd());
-    console.error(projectRoot, process.env.INDEX_ROOT);
+    // Step 1: 始终从 cwd 加载第三方 .env（这是 P2，会覆盖本地 MCP .env）
+    // 注意：不能用 process.env.INDEX_ROOT，那个值可能已被本地 MCP .env（P3）污染
+    const thirdPartyKeys = loadProjectDotenv(process.cwd());
+
+    // Step 2: INDEX_ROOT 只有来自 P1（CLI）或 P2（第三方 .env）时才可信
+    // 若只在本地 MCP .env（P3）里设了 INDEX_ROOT，在第三方项目中运行时应忽略它
+    const indexRoot =
+        CLI_KEYS.has('INDEX_ROOT') || thirdPartyKeys.has('INDEX_ROOT')
+            ? process.env.INDEX_ROOT
+            : undefined;
+    const projectRoot = resolve(indexRoot ?? process.cwd());
     console.error(
         `PG_URL=${process.env.PG_URL ? '(set)' : '(not set)'}` +
-            `[index] projectRoot=${projectRoot}`
+            `[index] projectRoot=${projectRoot} (INDEX_ROOT: ${CLI_KEYS.has('INDEX_ROOT') ? 'CLI' : thirdPartyKeys.has('INDEX_ROOT') ? 'third-party .env' : 'cwd fallback'})`
     );
 
     const globPatterns = process.env.INDEX_GLOB

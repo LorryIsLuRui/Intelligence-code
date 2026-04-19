@@ -37,13 +37,20 @@ interface WorkerOptions {
 
 interface EmbedJob {
     semanticHash: string;
+    /** 写入目标表，由 producer 在入队时注入，避免 worker 依赖自身 env */
+    symbolsTable?: string;
 }
 
-async function processEmbedJob(job: Job<EmbedJob>, pool: Pool): Promise<void> {
+async function processEmbedJob(
+    job: Job<EmbedJob>,
+    pool: Pool
+): Promise<{ updatedRows: number }> {
     const { semanticHash } = job.data;
+    // 优先使用 job payload 里的表名（跨项目场景），降级到 env（单项目场景）
+    const table = job.data.symbolsTable ?? env.symbolsTable;
     const shortHash = semanticHash.slice(0, 10);
-    const table = env.symbolsTable;
     const embedClient = createEmbeddingClient(env.embeddingServiceUrl);
+    const ts = () => new Date().toISOString();
 
     // Step 1: 缓存命中检查 —— 相同 semantic_hash 已有 online 向量
     const { rows: cached } = await pool.query<any>(
@@ -62,12 +69,9 @@ async function processEmbedJob(job: Job<EmbedJob>, pool: Pool): Promise<void> {
             typeof cached[0].embedding === 'string'
                 ? JSON.parse(cached[0].embedding)
                 : cached[0].embedding;
-        console.error(
-            `[worker] ✅ cache hit   hash=${shortHash}…  (0 API calls)`
-        );
 
         // cache hit 时只需把 pending 行的向量补齐（有可能是新增的同语义符号）
-        await pool.query(
+        const cacheResult = await pool.query(
             `UPDATE ${table}
              SET embedding = $1::vector, status = $2
              WHERE semantic_hash = $3 AND status = $4`,
@@ -78,7 +82,10 @@ async function processEmbedJob(job: Job<EmbedJob>, pool: Pool): Promise<void> {
                 SYMBOL_STATUS.PENDING,
             ]
         );
-        return;
+        console.error(
+            `[worker] ✅ cache hit   [${ts()}]  table=${table}  hash=${shortHash}…  updated ${cacheResult.rowCount ?? 0} row(s)  (0 API calls)`
+        );
+        return { updatedRows: cacheResult.rowCount ?? 0 };
     }
 
     // Cache miss: 取一条 pending 行做 embedding
@@ -93,9 +100,9 @@ async function processEmbedJob(job: Job<EmbedJob>, pool: Pool): Promise<void> {
     if (pending.length === 0) {
         // 所有行已被并发 worker 处理，幂等退出
         console.error(
-            `[worker] ⚠️  skip       hash=${shortHash}…  (no pending rows)`
+            `[worker] ⚠️  skip       [${ts()}]  table=${table}  hash=${shortHash}…  (no pending rows)`
         );
-        return;
+        return { updatedRows: 0 };
     }
 
     const row = pending[0];
@@ -104,7 +111,7 @@ async function processEmbedJob(job: Job<EmbedJob>, pool: Pool): Promise<void> {
     const rowObj = { ...row, meta };
 
     console.error(
-        `[worker] 🔄 embedding  hash=${shortHash}…  ${row.path}:${row.name}`
+        `[worker] 🔄 embedding  [${ts()}]  table=${table}  hash=${shortHash}…  ${row.path}:${row.name}`
     );
     // 与 reindex 保持一致：优先用 content（语义模板），降级用 indexedRowToEmbedText
     const doc = row.content ?? indexedRowToEmbedText(rowObj);
@@ -129,8 +136,9 @@ async function processEmbedJob(job: Job<EmbedJob>, pool: Pool): Promise<void> {
         ]
     );
     console.error(
-        `[worker] ✓  done        hash=${shortHash}…  category=${resolvedCategory ?? 'null'}  updated ${result.rowCount ?? 0} row(s)`
+        `[worker] ✓  done        [${ts()}]  table=${table}  hash=${shortHash}…  category=${resolvedCategory ?? 'null'}  updated ${result.rowCount ?? 0} row(s)`
     );
+    return { updatedRows: result.rowCount ?? 0 };
 }
 
 /**
@@ -163,7 +171,7 @@ export async function startEmbeddingWorker(
         console.error('[embedding-worker] category embeddings initialized');
     }
 
-    const worker = new Worker<EmbedJob>(
+    const worker = new Worker<EmbedJob, { updatedRows: number }>(
         'embedding',
         (job: Job<EmbedJob>) => processEmbedJob(job, pool),
         {
@@ -177,9 +185,20 @@ export async function startEmbeddingWorker(
         }
     );
 
+    // 累计统计：每次 drained 后重置
+    const stats = { completed: 0, updatedRows: 0 };
+
+    worker.on(
+        'completed',
+        (_job: Job<EmbedJob>, result: { updatedRows: number }) => {
+            stats.completed++;
+            stats.updatedRows += result?.updatedRows ?? 0;
+        }
+    );
+
     worker.on('failed', (job: Job<EmbedJob> | undefined, err: Error) => {
         console.error(
-            `[worker] ✗  failed     hash=${job?.data?.semanticHash?.slice(0, 10)}…  err=${err.message}`
+            `[worker] ✗  failed     [${new Date().toISOString()}]  table=${job?.data?.symbolsTable ?? env.symbolsTable}  hash=${job?.data?.semanticHash?.slice(0, 10)}…  err=${err.message}`
         );
     });
 
@@ -187,11 +206,13 @@ export async function startEmbeddingWorker(
         console.error(`[worker] error: ${err.message}`);
     });
 
-    // 队列清空时打完成信号（全量 reindex 入队后监听，确认所有 embedding 已处理）
+    // 队列清空时打汇总（全量 reindex 入队后监听，确认所有 embedding 已处理）
     queueEvents.on('drained', () => {
         console.error(
-            '[worker] ✅ all embedding jobs processed — queue is now empty'
+            `[worker] ✅ queue drained  [${new Date().toISOString()}]  completed=${stats.completed} jobs  rows_updated=${stats.updatedRows}`
         );
+        stats.completed = 0;
+        stats.updatedRows = 0;
     });
 
     const stop = async () => {

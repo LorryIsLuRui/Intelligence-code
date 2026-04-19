@@ -30,8 +30,8 @@ export function getSymbolsTableSQL(): string {
   file_hash     VARCHAR(64),
   semantic_hash VARCHAR(64),
   status        SMALLINT NOT NULL DEFAULT ${DEFAULT_STATUS_ON_UPSERT},
-  CONSTRAINT uk_symbols_path_name UNIQUE (path, name),
-  CONSTRAINT chk_type CHECK (type IN ('component','function','type','class','interface','hook'))
+  CONSTRAINT uk_${tableName}_path_name UNIQUE (path, name),
+  CONSTRAINT chk_${tableName}_type CHECK (type IN ('component','function','type','class','interface','hook'))
 )`;
 }
 
