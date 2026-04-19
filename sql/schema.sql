@@ -1,25 +1,35 @@
--- 可通过替换 symbols 为其他名称来创建不同项目的表
--- 表名也可通过环境变量 MYSQL_SYMBOLS_TABLE 在代码中动态指定
+-- PostgreSQL + pgvector schema
+-- 可通过 SYMBOLS_TABLE 环境变量或直接修改表名来创建不同项目的表
+CREATE EXTENSION IF NOT EXISTS vector;
+
 CREATE TABLE IF NOT EXISTS symbols (
-  id INT PRIMARY KEY AUTO_INCREMENT,
-  name VARCHAR(255) NOT NULL,
-  type ENUM('component', 'function', 'type', 'class', 'interface', 'hook') NOT NULL,
-  category VARCHAR(255) NULL,
-  path TEXT NOT NULL,
-  description TEXT NULL,
-  content MEDIUMTEXT NULL,
-  meta JSON NULL,
-  usage_count INT NOT NULL DEFAULT 0,
-  embedding JSON NULL COMMENT 'Phase 5: L2-normalized vector from Python embedding service (e.g. 384-dim MiniLM)',
-  insert_user VARCHAR(255) NOT NULL DEFAULT 'LorryIsLuRui',
-  updated_user VARCHAR(255) NOT NULL DEFAULT 'LorryIsLuRui',
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  file_hash VARCHAR(64) NULL COMMENT '文件内容 SHA256',
-  semantic_hash VARCHAR(64) NULL COMMENT 'normalized AST 语义模板 SHA256',
-  status TINYINT NOT NULL DEFAULT 1 COMMENT '状态: 0-offline 1-pending 2-online 3-error',
-  UNIQUE KEY uk_symbols_path_name (path(512), name(255)),
-  INDEX idx_file_hash (file_hash),
-  INDEX idx_semantic_hash (semantic_hash),
-  INDEX idx_status (status)
+  id            SERIAL PRIMARY KEY,
+  name          VARCHAR(255) NOT NULL,
+  type          VARCHAR(50) NOT NULL,
+  category      VARCHAR(255),
+  path          TEXT NOT NULL,
+  description   TEXT,
+  content       TEXT,
+  meta          JSONB,
+  usage_count   INT NOT NULL DEFAULT 0,
+  embedding     vector(384),
+  insert_user   VARCHAR(255) NOT NULL DEFAULT 'system',
+  updated_user  VARCHAR(255) NOT NULL DEFAULT 'system',
+  created_at    TIMESTAMP NOT NULL DEFAULT NOW(),
+  updated_at    TIMESTAMP NOT NULL DEFAULT NOW(),
+  file_hash     VARCHAR(64),
+  semantic_hash VARCHAR(64),
+  status        SMALLINT NOT NULL DEFAULT 1,
+  CONSTRAINT uk_symbols_path_name UNIQUE (path, name),
+  CONSTRAINT chk_type CHECK (type IN ('component','function','type','class','interface','hook'))
 );
+
+CREATE INDEX IF NOT EXISTS idx_file_hash     ON symbols(file_hash);
+CREATE INDEX IF NOT EXISTS idx_semantic_hash ON symbols(semantic_hash);
+CREATE INDEX IF NOT EXISTS idx_status        ON symbols(status);
+
+-- HNSW \u8fd1\u4f3c\u6700\u8fd1\u90bb\u7d22\u5f15\uff08cosine \u8ddd\u79bb\uff09
+-- \u5efa\u8bae\u6570\u636e\u91cf > 1000 \u540e\u6267\u884c\uff1b\u521d\u59cb\u65f6\u53ef\u6ce8\u91ca\u6389\uff0c\u5de5\u4f5c\u8fdb\u5165\u7a33\u5b9a\u540e\u518d\u5f00\u542f
+-- CREATE INDEX IF NOT EXISTS idx_embedding_hnsw
+--   ON symbols USING hnsw (embedding vector_cosine_ops)
+--   WITH (m = 16, ef_construction = 64);

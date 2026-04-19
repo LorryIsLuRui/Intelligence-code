@@ -17,9 +17,9 @@
 import { Worker, QueueEvents } from 'bullmq';
 import type { Job } from 'bullmq';
 import { Redis } from 'ioredis';
-import type { Pool } from 'mysql2/promise';
+import type { Pool } from 'pg';
 import { env } from '../config/env.js';
-import { getMySqlPool } from '../db/mysql.js';
+import { getPool } from '../db/postgres.js';
 import { createEmbeddingClient } from '../services/embeddingClient.js';
 import { indexedRowToEmbedText } from '../indexer/embedText.js';
 import {
@@ -42,13 +42,13 @@ interface EmbedJob {
 async function processEmbedJob(job: Job<EmbedJob>, pool: Pool): Promise<void> {
     const { semanticHash } = job.data;
     const shortHash = semanticHash.slice(0, 10);
-    const table = env.mysqlSymbolsTable;
+    const table = env.symbolsTable;
     const embedClient = createEmbeddingClient(env.embeddingServiceUrl);
 
     // Step 1: 缓存命中检查 —— 相同 semantic_hash 已有 online 向量
-    const [cached] = await pool.query<any[]>(
+    const { rows: cached } = await pool.query<any>(
         `SELECT embedding FROM ${table}
-         WHERE semantic_hash = ? AND status = ? AND embedding IS NOT NULL
+         WHERE semantic_hash = $1 AND status = $2 AND embedding IS NOT NULL
          LIMIT 1`,
         [semanticHash, SYMBOL_STATUS.ONLINE]
     );
@@ -57,6 +57,7 @@ async function processEmbedJob(job: Job<EmbedJob>, pool: Pool): Promise<void> {
 
     if (cached.length > 0) {
         // Cache hit: 直接复用已有向量，0 次 API 调用
+        // pgvector 返回字符串 "[x1,x2,...]", JSON.parse 可直接解析
         vector =
             typeof cached[0].embedding === 'string'
                 ? JSON.parse(cached[0].embedding)
@@ -68,10 +69,10 @@ async function processEmbedJob(job: Job<EmbedJob>, pool: Pool): Promise<void> {
         // cache hit 时只需把 pending 行的向量补齐（有可能是新增的同语义符号）
         await pool.query(
             `UPDATE ${table}
-             SET embedding = CAST(? AS JSON), status = ?
-             WHERE semantic_hash = ? AND status = ?`,
+             SET embedding = $1::vector, status = $2
+             WHERE semantic_hash = $3 AND status = $4`,
             [
-                JSON.stringify(vector),
+                `[${vector.join(',')}]`,
                 SYMBOL_STATUS.ONLINE,
                 semanticHash,
                 SYMBOL_STATUS.PENDING,
@@ -81,10 +82,10 @@ async function processEmbedJob(job: Job<EmbedJob>, pool: Pool): Promise<void> {
     }
 
     // Cache miss: 取一条 pending 行做 embedding
-    const [pending] = await pool.query<any[]>(
+    const { rows: pending } = await pool.query<any>(
         `SELECT name, type, category, path, description, content, meta
          FROM ${table}
-         WHERE semantic_hash = ? AND status = ?
+         WHERE semantic_hash = $1 AND status = $2
          LIMIT 1`,
         [semanticHash, SYMBOL_STATUS.PENDING]
     );
@@ -115,12 +116,12 @@ async function processEmbedJob(job: Job<EmbedJob>, pool: Pool): Promise<void> {
     const resolvedCategory = resolvedRow.category ?? null;
 
     // Step 2: 批量写入 —— 覆盖所有相同 semantic_hash 的 pending 行
-    const [result] = await pool.query<any>(
+    const result = await pool.query(
         `UPDATE ${table}
-         SET embedding = CAST(? AS JSON), status = ?, category = COALESCE(?, category)
-         WHERE semantic_hash = ? AND status = ?`,
+         SET embedding = $1::vector, status = $2, category = COALESCE($3, category)
+         WHERE semantic_hash = $4 AND status = $5`,
         [
-            JSON.stringify(vector),
+            `[${vector.join(',')}]`,
             SYMBOL_STATUS.ONLINE,
             resolvedCategory,
             semanticHash,
@@ -128,7 +129,7 @@ async function processEmbedJob(job: Job<EmbedJob>, pool: Pool): Promise<void> {
         ]
     );
     console.error(
-        `[worker] ✓  done        hash=${shortHash}…  category=${resolvedCategory ?? 'null'}  updated ${result.affectedRows} row(s)`
+        `[worker] ✓  done        hash=${shortHash}…  category=${resolvedCategory ?? 'null'}  updated ${result.rowCount ?? 0} row(s)`
     );
 }
 
@@ -154,12 +155,7 @@ export async function startEmbeddingWorker(
         connection: eventsConnection,
     });
 
-    const pool = getMySqlPool();
-    if (!pool) {
-        throw new Error(
-            '[embeddingWorker] MySQL pool unavailable — check env vars'
-        );
-    }
+    const pool = getPool();
 
     // 预热 category embeddings（仅在服务启动时调用一次）
     if (env.embeddingServiceUrl) {

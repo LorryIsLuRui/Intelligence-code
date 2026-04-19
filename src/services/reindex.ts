@@ -2,7 +2,7 @@ import { resolve, join } from 'node:path';
 import { readFileSync } from 'node:fs';
 import fg from 'fast-glob';
 import { env, loadProjectDotenv } from '../config/env.js';
-import { getMySqlPool } from '../db/mysql.js';
+import { getPool } from '../db/postgres.js';
 import { indexProject, DEFAULT_IGNORE } from '../indexer/indexProject.js';
 import { upsertSymbols } from '../indexer/persistSymbols.js';
 import { computeFileHash } from '../indexer/tsAstNormalizer.js';
@@ -45,14 +45,14 @@ export async function runReindex(
 
     loadProjectDotenv(projectRoot);
     console.error(
-        `[reindex] projectRoot=${projectRoot}, dryRun=${dryRun}, forceRebuild=${forceRebuild}, MYSQL_HOST=${process.env.MYSQL_HOST}`
+        `[reindex] projectRoot=${projectRoot}, dryRun=${dryRun}, forceRebuild=${forceRebuild}, PG_URL=${process.env.PG_URL ? '(set)' : '(not set)'}`
     );
 
-    let pool: Awaited<ReturnType<typeof getMySqlPool>> | null = null;
+    let pool: ReturnType<typeof getPool> | null = null;
     if (!dryRun) {
-        pool = getMySqlPool();
-        await pool!.query('SELECT 1');
-        console.error('[reindex] MySQL connection successful');
+        pool = getPool();
+        await pool.query('SELECT 1');
+        console.error('[reindex] PostgreSQL connection successful');
     }
 
     // ─── 1. glob 解析出全量文件列表（绝对路径）──────────────────────────
@@ -84,13 +84,16 @@ export async function runReindex(
 
         // 一次性批量查 DB 已有的 file_hash
         const relPaths = [...currentFileHashes.keys()];
-        const [dbRows] = await pool!.query<any[]>(
-            `SELECT DISTINCT path, file_hash FROM ${env.mysqlSymbolsTable}
-             WHERE path IN (?) AND file_hash IS NOT NULL`,
+        const { rows: dbRows } = await pool!.query<{
+            path: string;
+            file_hash: string;
+        }>(
+            `SELECT DISTINCT path, file_hash FROM ${env.symbolsTable}
+             WHERE path = ANY($1) AND file_hash IS NOT NULL`,
             [relPaths]
         );
         const dbFileHash = new Map<string, string>(
-            dbRows.map((r: any) => [r.path, r.file_hash])
+            dbRows.map((r) => [r.path, r.file_hash])
         );
 
         filesToIndex = allFiles.filter((absPath) => {
@@ -139,9 +142,9 @@ export async function runReindex(
         // forceRebuild：先清空 DB 中已有的 embedding，使 worker cache check 必然 miss
         if (forceRebuild && pendingHashes.length > 0) {
             await pool!.query(
-                `UPDATE ${env.mysqlSymbolsTable}
-                 SET embedding = NULL, status = ?
-                 WHERE semantic_hash IN (?)`,
+                `UPDATE ${env.symbolsTable}
+                 SET embedding = NULL, status = $1
+                 WHERE semantic_hash = ANY($2)`,
                 [SYMBOL_STATUS.PENDING, pendingHashes]
             );
             console.error(

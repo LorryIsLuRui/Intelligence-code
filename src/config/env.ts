@@ -71,27 +71,19 @@ for (const arg of process.argv) {
     }
 }
 
-const requiredWhenEnabled = [
-    'MYSQL_HOST',
-    'MYSQL_USER',
-    'MYSQL_DATABASE',
-] as const;
 console.error(
-    `[Config] MYSQL_HOST: ${process.env.MYSQL_HOST},
-    MYSQL_USER: ${process.env.MYSQL_USER},
-    MYSQL_DATABASE: ${process.env.MYSQL_DATABASE},
+    `[Config] PG_URL: ${process.env.PG_URL ? '(set)' : '(not set)'},
     EMBEDDING_SERVICE_URL: ${process.env.EMBEDDING_SERVICE_URL},
-    MYSQL_SYMBOLS_TABLE: ${process.env.MYSQL_SYMBOLS_TABLE}
+    SYMBOLS_TABLE: ${process.env.SYMBOLS_TABLE}
     `
 );
 export const env = {
-    mysqlHost: process.env.MYSQL_HOST ?? '127.0.0.1',
-    mysqlPort: Number(process.env.MYSQL_PORT ?? '3306'),
-    mysqlUser: process.env.MYSQL_USER ?? 'root',
-    mysqlPassword: process.env.MYSQL_PASSWORD ?? '',
-    mysqlDatabase: process.env.MYSQL_DATABASE ?? 'code_intelligence',
-    /** symbols 表名，可通过 MYSQL_SYMBOLS_TABLE 环境变量配置 */
-    mysqlSymbolsTable: process.env.MYSQL_SYMBOLS_TABLE ?? 'symbols',
+    /** PostgreSQL 连接字符串，如 postgresql://postgres:pass@127.0.0.1:5432/code_intelligence */
+    pgUrl:
+        process.env.PG_URL ??
+        'postgresql://postgres:devpassword@127.0.0.1:5432/code_intelligence',
+    /** symbols 表名，可通过 SYMBOLS_TABLE 环境变量配置 */
+    symbolsTable: process.env.SYMBOLS_TABLE ?? 'symbols',
     /** Phase 5：指向 Python FastAPI 嵌入服务根 URL，如 http://127.0.0.1:8765 */
     embeddingServiceUrl: (process.env.EMBEDDING_SERVICE_URL ?? '').trim(),
     /** Redis 连接 URL，供 BullMQ embedding worker 使用 */
@@ -99,9 +91,9 @@ export const env = {
 };
 
 export function validateEnv(): void {
-    for (const key of requiredWhenEnabled) {
-        if (!process.env[key]) {
-            throw new Error(`Missing environment variable: ${key}`);
-        }
+    if (!process.env.PG_URL) {
+        console.warn(
+            '[Config] PG_URL not set, using default postgresql://postgres:devpassword@127.0.0.1:5432/code_intelligence'
+        );
     }
 }

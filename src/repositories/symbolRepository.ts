@@ -1,12 +1,11 @@
-import type { Pool, RowDataPacket } from 'mysql2/promise';
+import pg from 'pg';
 import { env } from '../config/env.js';
-import { getMySqlPool } from '../db/mysql.js';
+import { getPool } from '../db/postgres.js';
 import type { CodeSymbol, SymbolType } from '../types/symbol.js';
 import { createEmbeddingClient } from '../services/embeddingClient.js';
-import { cosineSimilarity } from '../services/vectorMath.js';
 import { SEARCHABLE_STATUS } from '../config/symbolStatus.js';
 
-interface SymbolRow extends RowDataPacket {
+interface SymbolRow {
     id: number;
     name: string;
     type: SymbolType;
@@ -17,10 +16,11 @@ interface SymbolRow extends RowDataPacket {
     meta: string | null;
     usage_count: number;
     created_at?: string | null;
-    embedding?: unknown;
+    embedding?: string | null; // pgvector 返回字符串 "[x1,x2,...]"
+    similarity?: string; // searchSemanticHits 时附加
 }
-const THREADHOLD_SIMILARITY_BEFORE_RANKED = 0.5;
-const TOP_K_FOR_RANKING = 100; // 进入复杂排序的候选数上限（语义相似度初筛后保留的结果数，过大会增加排序成本）
+const SIMILARITY_THRESHOLD = 0.5;
+const TOP_K = 20;
 
 const inMemorySymbols: CodeSymbol[] = [
     {
@@ -61,6 +61,7 @@ function parseEmbedding(raw: unknown): number[] | null {
     }
     if (typeof raw === 'string') {
         try {
+            // pgvector 返回 "[x1,x2,...]"，恰好是合法 JSON 数组
             const j = JSON.parse(raw) as unknown;
             if (!Array.isArray(j)) return null;
             const nums = j
@@ -107,10 +108,10 @@ function getMetaArray(
 }
 
 export class SymbolRepository {
-    private pool: Pool | null;
+    private pool: pg.Pool | null;
 
     constructor() {
-        this.pool = getMySqlPool();
+        this.pool = getPool();
     }
 
     async search(query: string, type?: SymbolType): Promise<CodeSymbol[]> {
@@ -126,38 +127,35 @@ export class SymbolRepository {
             });
         }
 
-        const params: Array<string> = [`%${query}%`];
+        const params: Array<string | number> = [
+            `%${query}%`,
+            SEARCHABLE_STATUS,
+        ];
         let sql = `
-      SELECT id, name, type, category, path, description, content, CAST(meta AS CHAR) AS meta, usage_count, created_at
-      FROM ${env.mysqlSymbolsTable}
-      WHERE (name LIKE ? OR description LIKE ?)
-        AND status = ${SEARCHABLE_STATUS}
+      SELECT id, name, type, category, path, description, content, meta::text AS meta, usage_count, created_at
+      FROM ${env.symbolsTable}
+      WHERE (name ILIKE $1 OR description ILIKE $1)
+        AND status = $2
     `;
-        params.push(`%${query}%`);
 
         if (type) {
-            sql += ' AND type = ?';
             params.push(type);
+            sql += ` AND type = $${params.length}`;
         }
 
         sql += ' ORDER BY usage_count DESC LIMIT 20';
 
-        const [rows] = await this.pool.query<SymbolRow[]>(sql, params);
+        const { rows } = await this.pool.query<SymbolRow>(sql, params);
         return rows.map((r) => mapRow(r));
     }
 
     /**
-   * Phase 5：对自然语言查询做向量检索，启用分桶采样策略，返回代码
-  块与余弦相似度。
-   * 分桶策略：
-   * - 第一层：按 category 占比计算每个分类应采样条数（保底10条）
-   * - 第二层：每个 path 子桶内乱序后采样 Math.max(5,
-  floor(catLimit / pathCount)) 条
-  * 最终选择topK，进入排序
-   */
+     * 语义向量检索：将 query 嵌入后用 pgvector <=> 运算符（cosine distance）在数据库内完成相似度排序。
+     * 不再需要在 Node 拉取全量向量做内存计算。
+     */
     async searchSemanticHits(
         query: string,
-        opts?: { type?: SymbolType; candidateLimit?: number; limit?: number }
+        opts?: { type?: SymbolType; limit?: number }
     ): Promise<Array<{ symbol: CodeSymbol; similarity: number }>> {
         if (!env.embeddingServiceUrl) {
             throw new Error(
@@ -168,119 +166,45 @@ export class SymbolRepository {
             return [];
         }
 
-        const candidateLimit = opts?.candidateLimit ?? 3000;
-        const limit = opts?.limit ?? TOP_K_FOR_RANKING;
-        const type = opts?.type;
-
+        const limit = opts?.limit ?? TOP_K;
         const client = createEmbeddingClient(env.embeddingServiceUrl);
         const [queryVec] = await client.embed([query.trim()]);
         if (!queryVec?.length) {
             throw new Error('查询向量为空');
         }
-        // 查询足够的数据以支持分桶采样（3倍候选数以覆盖各桶）
-        const fetchLimit = candidateLimit * 3;
+
+        // pgvector 向量字面量格式：[x1,x2,...]
+        const vecLiteral = `[${queryVec.join(',')}]`;
+        const params: unknown[] = [vecLiteral, SEARCHABLE_STATUS];
+
+        // 1 - cosine_distance = cosine_similarity；多取一倍候选后在应用层过阈值
         let sql = `
-      SELECT id, name, type, category, path, description, content, CAST(meta AS CHAR) AS meta, usage_count, created_at, embedding
-      FROM ${env.mysqlSymbolsTable}
+      SELECT id, name, type, category, path, description, content, meta::text AS meta,
+             usage_count, created_at,
+             1 - (embedding <=> $1::vector) AS similarity
+      FROM ${env.symbolsTable}
       WHERE embedding IS NOT NULL
-        AND status = ${SEARCHABLE_STATUS}
+        AND status = $2
     `;
-        const params: Array<string | number> = [];
 
-        if (type) {
-            sql += ' AND type = ?';
-            params.push(type);
+        if (opts?.type) {
+            params.push(opts.type);
+            sql += ` AND type = $${params.length}`;
         }
 
-        sql += ' DESC LIMIT ?';
-        params.push(fetchLimit);
+        params.push(limit * 2); // 多取一倍以便 SIMILARITY_THRESHOLD 过滤后仍有足量结果
+        sql += ` ORDER BY embedding <=> $1::vector LIMIT $${params.length}`;
 
-        const [rows] = await this.pool.query<SymbolRow[]>(sql, params);
-        const withVec = rows
-            .map((r) => mapRow(r, { includeEmbedding: true }))
-            .filter(
-                (s) => s.embedding && s.embedding.length === queryVec.length
-            );
-        // 分桶采样：按 category + path 两层分桶
-        const sampled = this.bucketSampling(withVec, candidateLimit);
-        return sampled
-            .map((s) => {
-                const sim = cosineSimilarity(queryVec, s.embedding!);
-                const { embedding: _, ...rest } = s;
-                return { symbol: rest as CodeSymbol, similarity: sim };
-            })
-            .filter((x) => x.similarity >= THREADHOLD_SIMILARITY_BEFORE_RANKED) // 初筛阈值，过滤掉明显不相关的结果
-            .sort((a, b) => b.similarity - a.similarity)
+        const { rows } = await this.pool.query<
+            SymbolRow & { similarity: string }
+        >(sql, params);
+        return rows
+            .map((r) => ({
+                symbol: mapRow(r),
+                similarity: Number(r.similarity),
+            }))
+            .filter((x) => x.similarity >= SIMILARITY_THRESHOLD)
             .slice(0, limit);
-    }
-
-    /**
-   * 分桶采样核心逻辑
-   * - 第一层：按 category 占比计算每个分类应采样条数（保底10条）
-   * - 第二层：每个 path 子桶内乱序后采样 Math.max(5,
-  floor(catLimit / pathCount)) 条
-   */
-    private bucketSampling(symbols: CodeSymbol[], limit: number): CodeSymbol[] {
-        if (symbols.length === 0) return [];
-
-        // 按 category 分组
-        const categoryGroups = new Map<string, CodeSymbol[]>();
-        for (const s of symbols) {
-            const cat = s.category ?? '__null__';
-            if (!categoryGroups.has(cat)) {
-                categoryGroups.set(cat, []);
-            }
-            categoryGroups.get(cat)!.push(s);
-        }
-
-        const total = symbols.length;
-        const sampled: CodeSymbol[] = [];
-
-        // 第一层：按 category 占比计算采样数，保底10条
-        for (const [, catSymbols] of categoryGroups) {
-            const catCount = catSymbols.length;
-            const catRatio = catCount / total;
-            const catLimit = Math.max(10, Math.floor(limit * catRatio));
-
-            // 按 path 分组（提取目录部分）
-            const pathGroups = new Map<string, CodeSymbol[]>();
-            for (const s of catSymbols) {
-                const dir = s.path.includes('/')
-                    ? s.path.slice(0, s.path.lastIndexOf('/'))
-                    : '__root__';
-                if (!pathGroups.has(dir)) {
-                    pathGroups.set(dir, []);
-                }
-                pathGroups.get(dir)!.push(s);
-            }
-
-            const pathCount = pathGroups.size;
-            const perPathSample = Math.max(5, Math.floor(catLimit / pathCount));
-
-            // 第二层：每个 path 子桶内乱序后采样
-            for (const pathSymbols of pathGroups.values()) {
-                // 原地乱序（Fisher- Y ates）
-                for (let i = pathSymbols.length - 1; i > 0; i--) {
-                    const j = Math.floor(Math.random() * (i + 1));
-                    [pathSymbols[i], pathSymbols[j]] = [
-                        pathSymbols[j],
-                        pathSymbols[i],
-                    ];
-                }
-
-                const pathSampleCount = Math.min(
-                    perPathSample,
-                    pathSymbols.length
-                );
-                sampled.push(...pathSymbols.slice(0, pathSampleCount));
-
-                if (sampled.length >= limit) break;
-            }
-
-            if (sampled.length >= limit) break;
-        }
-
-        return sampled.slice(0, limit);
     }
 
     async getByName(name: string): Promise<CodeSymbol | null> {
@@ -292,11 +216,11 @@ export class SymbolRepository {
             );
         }
 
-        const [rows] = await this.pool.query<SymbolRow[]>(
+        const { rows } = await this.pool.query<SymbolRow>(
             `
-      SELECT id, name, type, category, path, description, content, CAST(meta AS CHAR) AS meta, usage_count, created_at
-      FROM ${env.mysqlSymbolsTable}
-      WHERE name = ?
+      SELECT id, name, type, category, path, description, content, meta::text AS meta, usage_count, created_at
+      FROM ${env.symbolsTable}
+      WHERE name = $1
       LIMIT 1
       `,
             [name]
@@ -322,11 +246,11 @@ export class SymbolRepository {
             }
             return false;
         }
-        const [result] = await this.pool.query(
-            `UPDATE ${env.mysqlSymbolsTable} SET usage_count = usage_count + 1 WHERE id = ?`,
+        const result = await this.pool.query(
+            `UPDATE ${env.symbolsTable} SET usage_count = usage_count + 1 WHERE id = $1`,
             [symbolId]
         );
-        return (result as { affectedRows: number }).affectedRows > 0;
+        return result.rowCount !== null && result.rowCount > 0;
     }
 
     async searchByStructure(
@@ -364,23 +288,23 @@ export class SymbolRepository {
 
         const params: Array<string | number> = [];
         let sql = `
-      SELECT id, name, type, category, path, description, content, CAST(meta AS CHAR) AS meta, usage_count, created_at
-      FROM ${env.mysqlSymbolsTable}
+      SELECT id, name, type, category, path, description, content, meta::text AS meta, usage_count, created_at
+      FROM ${env.symbolsTable}
       WHERE 1 = 1
     `;
 
         if (type) {
-            sql += ' AND type = ?';
             params.push(type);
+            sql += ` AND type = $${params.length}`;
         }
         if (category) {
-            sql += ' AND category LIKE ?';
             params.push(`%${category}%`);
+            sql += ` AND category ILIKE $${params.length}`;
         }
-        sql += ' ORDER BY usage_count DESC LIMIT ?';
         params.push(Math.max(limit * 5, 50));
+        sql += ` ORDER BY usage_count DESC LIMIT $${params.length}`;
 
-        const [rows] = await this.pool.query<SymbolRow[]>(sql, params);
+        const { rows } = await this.pool.query<SymbolRow>(sql, params);
         return rows
             .map((r) => mapRow(r))
             .filter(matchesAll)

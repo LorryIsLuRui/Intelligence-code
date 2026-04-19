@@ -1,7 +1,7 @@
-import type { Pool } from 'mysql2/promise';
+import type { Pool } from 'pg';
 import type { IndexedSymbolRow } from './indexProject.js';
 import { env } from '../config/env.js';
-import { getSymbolsTableSQL } from '../db/schema.js';
+import { getAllTableSQLs } from '../db/schema.js';
 import { SYMBOL_STATUS } from '../config/symbolStatus.js';
 
 /**
@@ -20,46 +20,52 @@ export async function upsertSymbols(
     if (embeddings && embeddings.length !== rows.length) {
         throw new Error('upsertSymbols: embeddings length must match rows');
     }
-    const actor = process.env.GITHUB_USERNAME?.trim() || 'LorryIsLuRui';
-    await pool.query(getSymbolsTableSQL()); // 确保表存在
-    const sql = `
-    INSERT INTO ${env.mysqlSymbolsTable}
+    const actor = process.env.GITHUB_USERNAME?.trim() || 'system';
+    const client = await pool.connect();
+    try {
+        // 确保 extension + 表 + 基础索引存在
+        for (const sql of getAllTableSQLs()) {
+            await client.query(sql);
+        }
+
+        await client.query('BEGIN');
+
+        const t = env.symbolsTable;
+        const sql = `
+    INSERT INTO ${t}
       (name, type, category, path, description, content, meta,
        insert_user, updated_user, embedding, semantic_hash, file_hash, status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON DUPLICATE KEY UPDATE
-      type          = VALUES(type),
-      category      = VALUES(category),
-      description   = VALUES(description),
-      content       = VALUES(content),
-      meta          = VALUES(meta),
-      updated_user  = VALUES(updated_user),
+    VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10::vector, $11, $12, $13)
+    ON CONFLICT (path, name) DO UPDATE SET
+      type          = EXCLUDED.type,
+      category      = EXCLUDED.category,
+      description   = EXCLUDED.description,
+      content       = EXCLUDED.content,
+      meta          = EXCLUDED.meta,
+      updated_user  = EXCLUDED.updated_user,
       embedding     = CASE
-                        WHEN VALUES(embedding) IS NOT NULL THEN VALUES(embedding)
-                        WHEN VALUES(semantic_hash) != semantic_hash THEN NULL
-                        ELSE embedding
+                        WHEN EXCLUDED.embedding IS NOT NULL THEN EXCLUDED.embedding
+                        WHEN EXCLUDED.semantic_hash != ${t}.semantic_hash THEN NULL
+                        ELSE ${t}.embedding
                       END,
-      semantic_hash = VALUES(semantic_hash),
-      file_hash     = VALUES(file_hash),
+      semantic_hash = EXCLUDED.semantic_hash,
+      file_hash     = EXCLUDED.file_hash,
       status        = CASE
-                        WHEN VALUES(embedding) IS NOT NULL THEN ${SYMBOL_STATUS.ONLINE}
-                        WHEN VALUES(semantic_hash) != semantic_hash THEN ${SYMBOL_STATUS.PENDING}
-                        ELSE status
-                      END
+                        WHEN EXCLUDED.embedding IS NOT NULL THEN ${SYMBOL_STATUS.ONLINE}
+                        WHEN EXCLUDED.semantic_hash != ${t}.semantic_hash THEN ${SYMBOL_STATUS.PENDING}
+                        ELSE ${t}.status
+                      END,
+      updated_at    = NOW()
   `;
 
-    const conn = await pool.getConnection();
-    try {
-        await conn.beginTransaction();
         for (let i = 0; i < rows.length; i++) {
             const r = rows[i];
             const emb = embeddings?.[i];
-            const embJson =
-                emb !== undefined && emb !== null ? JSON.stringify(emb) : null;
-            // 新行：有 embedding 则直接 online，否则 pending
+            // pgvector 接受 "[x1,x2,...]" 格式字符串
+            const vecStr = emb != null ? `[${emb.join(',')}]` : null;
             const statusVal =
-                embJson !== null ? SYMBOL_STATUS.ONLINE : SYMBOL_STATUS.PENDING;
-            await conn.query(sql, [
+                vecStr !== null ? SYMBOL_STATUS.ONLINE : SYMBOL_STATUS.PENDING;
+            await client.query(sql, [
                 r.name,
                 r.type,
                 r.category,
@@ -69,17 +75,18 @@ export async function upsertSymbols(
                 JSON.stringify(r.meta),
                 actor,
                 actor,
-                embJson,
+                vecStr, // $10 → cast as vector, null 时写 NULL
                 r.semantic_hash,
                 r.file_hash,
                 statusVal,
             ]);
         }
-        await conn.commit();
+
+        await client.query('COMMIT');
     } catch (e) {
-        await conn.rollback();
+        await client.query('ROLLBACK');
         throw e;
     } finally {
-        conn.release();
+        client.release();
     }
 }

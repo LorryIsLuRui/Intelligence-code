@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Phase 2 CLI：扫描代码库并写入 MySQL `symbols`。
+ * Phase 2 CLI：扫描代码库并写入 PostgreSQL `symbols`。
  *
  * 环境变量加载顺序：
  * 1. 命令行参数（最高优先级）
@@ -14,7 +14,7 @@ import { runReindex } from '../services/reindex.js';
 /**
  * 入口：加载第三方 .env → 校验环境 → 调用 runReindex。
  * 进度与统计输出到 **stderr**，避免占用 stdout。
- * 进程退出码：成功 `0`，无 MySQL 或异常 `1`。
+ * 进程退出码：成功 `0`，连接失败或异常 `1`。
  */
 async function main() {
     // const projectRoot = resolve(process.env.INDEX_ROOT ?? process.cwd());
@@ -22,7 +22,7 @@ async function main() {
     const projectRoot = resolve(process.env.INDEX_ROOT ?? process.cwd());
     console.error(projectRoot, process.env.INDEX_ROOT);
     console.error(
-        `MYSQL_HOST=${process.env.MYSQL_HOST}` +
+        `PG_URL=${process.env.PG_URL ? '(set)' : '(not set)'}` +
             `[index] projectRoot=${projectRoot}`
     );
 
@@ -47,25 +47,31 @@ async function main() {
     console.error(
         `[index] extracted ${result.extractedCount} symbol(s), enqueued ${result.enqueuedCount} for embedding`
     );
-    console.error('[index] upserted into MySQL, success:', result.upserted);
+    console.error(
+        '[index] upserted into PostgreSQL, success:',
+        result.upserted
+    );
 }
 
 main().catch((err: unknown) => {
     console.error('[index] failed:', err);
     const anyErr = err as { code?: string; errno?: number };
     if (anyErr.code === 'ECONNREFUSED') {
-        const host = process.env.MYSQL_HOST ?? '127.0.0.1';
-        const port = process.env.MYSQL_PORT ?? '3306';
+        const pgUrl =
+            process.env.PG_URL ?? 'postgresql://...@127.0.0.1:5432/...';
         console.error(
-            `[index] 原因: 无法连接 ${host}:${port}（连接被拒绝）。请先在本机启动 MySQL/MariaDB，或把 .env 里的 MYSQL_HOST / MYSQL_PORT 改成实际地址。macOS 可用 brew services start mysql 等方式启动。`
+            `[index] 原因: 无法连接 PostgreSQL（连接被拒绝）。当前 PG_URL=${pgUrl}。请确认 docker compose up -d 已启动 pgvector 容器。`
         );
-    } else if (anyErr.code === 'ER_ACCESS_DENIED_ERROR') {
+    } else if (
+        anyErr.code === 'ER_ACCESS_DENIED_ERROR' ||
+        anyErr.code === '28P01'
+    ) {
         console.error(
-            '[index] 原因: 用户名或密码错误，请检查 MYSQL_USER / MYSQL_PASSWORD。'
+            '[index] 原因: 用户名或密码错误，请检查 PG_URL 中的 user/password。'
         );
     } else if (anyErr.code === 'ENOTFOUND' || anyErr.code === 'ETIMEDOUT') {
         console.error(
-            '[index] 原因: 网络不可达或超时，请检查 MYSQL_HOST 是否可解析、防火墙与安全组。'
+            '[index] 原因: 网络不可达或超时，请检查 PG_URL 中的 host 是否可解析。'
         );
     }
     process.exit(1);

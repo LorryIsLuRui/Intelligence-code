@@ -1,32 +1,23 @@
-# 本地开发用 MySQL 8（数据持久化到命名卷 intelligence-mysql-data）
+# 本地开发用 PostgreSQL 17 + pgvector（数据持久化到命名卷 intelligence-pg-data）
 # 启动：docker compose up -d
 # 停止：docker compose down（加 -v 可删库卷，慎用）
 
 services:
-    mysql:
-        image: mysql:8.0
-        container_name: intelligence-mysql
+    postgres:
+        image: pgvector/pgvector:pg17
+        container_name: intelligence-postgres
         restart: unless-stopped
         ports:
-            - '3306:3306'
+            - '5432:5432'
         environment:
-            MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-devpassword}
-            MYSQL_DATABASE: ${MYSQL_DATABASE:-code_intelligence}
+            POSTGRES_PASSWORD: ${PG_PASSWORD:-devpassword}
+            POSTGRES_DB: ${PG_DATABASE:-code_intelligence}
+            POSTGRES_USER: ${PG_USER:-postgres}
         volumes:
-            - intelligence-mysql-data:/var/lib/mysql
+            - intelligence-pg-data:/var/lib/postgresql/data
             - ./sql/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
-        command: >
-            --character-set-server=utf8mb4
-            --collation-server=utf8mb4_unicode_ci
-            --default-time-zone=+08:00
         healthcheck:
-            test:
-                [
-                    'CMD',
-                    'sh',
-                    '-c',
-                    'mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD',
-                ]
+            test: ['CMD-SHELL', 'pg_isready -U postgres']
             interval: 5s
             timeout: 5s
             retries: 25
@@ -45,4 +36,4 @@ services:
             retries: 10
 
 volumes:
-    intelligence-mysql-data:
+    intelligence-pg-data:

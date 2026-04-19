@@ -1,6 +1,6 @@
 // CI增量索引：处理changed files和deleted files
 import { env, loadProjectDotenv } from '../config/env.js';
-import { getMySqlPool } from '../db/mysql.js';
+import { getPool } from '../db/postgres.js';
 import { indexProject } from '../indexer/indexProject.js';
 import {
     DEFAULT_STATUS_ON_UPSERT,
@@ -22,24 +22,21 @@ export async function runIncrementalIndex(opts: IncrementalIndexOptions) {
     const { projectRoot, changedFiles, deletedFiles, renamedFiles = [] } = opts;
 
     loadProjectDotenv(projectRoot);
-    const pool = getMySqlPool();
-    if (!pool) {
-        throw new Error('Failed to get MySQL pool');
-    }
-    const tableName = env.mysqlSymbolsTable;
+    const pool = getPool();
+    const tableName = env.symbolsTable;
 
     // 1. 删除文件：标记 offline
     for (const file of deletedFiles) {
-        await pool.query(`UPDATE ${tableName} SET status = ? WHERE path = ?`, [
-            SYMBOL_STATUS.OFFLINE,
-            file,
-        ]);
+        await pool.query(
+            `UPDATE ${tableName} SET status = $1 WHERE path = $2`,
+            [SYMBOL_STATUS.OFFLINE, file]
+        );
         console.error(`[ci-index] marked offline: ${file}`);
     }
 
     // 2. 重命名文件：更新path
     for (const { from, to } of renamedFiles) {
-        await pool.query(`UPDATE ${tableName} SET path = ? WHERE path = ?`, [
+        await pool.query(`UPDATE ${tableName} SET path = $1 WHERE path = $2`, [
             to,
             from,
         ]);
@@ -62,16 +59,18 @@ export async function runIncrementalIndex(opts: IncrementalIndexOptions) {
                    (name, type, category, path, description, content, meta,
                     file_hash, semantic_hash, status,
                     usage_count, created_at, updated_at)
-                 VALUES (?, ?, ?, ?, ?, ?, CAST(? AS JSON), ?, ?, ?, 0, NOW(), NOW())
-                 ON DUPLICATE KEY UPDATE
-                   type             = VALUES(type),
-                   category         = VALUES(category),
-                   description      = VALUES(description),
-                   content          = VALUES(content),
-                   meta             = VALUES(meta),
-                   file_hash        = VALUES(file_hash),
-                   semantic_hash    = VALUES(semantic_hash),
-                   status           = IF(semantic_hash = VALUES(semantic_hash), status, VALUES(status)),
+                 VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, 0, NOW(), NOW())
+                 ON CONFLICT (path, name) DO UPDATE SET
+                   type             = EXCLUDED.type,
+                   category         = EXCLUDED.category,
+                   description      = EXCLUDED.description,
+                   content          = EXCLUDED.content,
+                   meta             = EXCLUDED.meta,
+                   file_hash        = EXCLUDED.file_hash,
+                   semantic_hash    = EXCLUDED.semantic_hash,
+                   status           = CASE WHEN ${tableName}.semantic_hash = EXCLUDED.semantic_hash
+                                          THEN ${tableName}.status
+                                          ELSE EXCLUDED.status END,
                    updated_at       = NOW()`,
                 [
                     row.name,

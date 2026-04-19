@@ -11,7 +11,7 @@
  *
  * 环境变量：
  *   REDIS_URL           Redis 连接 URL（默认 redis://127.0.0.1:6379）
- *   MYSQL_HOST / ...    MySQL 连接配置
+ *   PG_URL              PostgreSQL 连接字符串
  *   EMBEDDING_SERVICE_URL  Python embedding 服务地址
  *   WORKER_CONCURRENCY  单进程并发 job 数（默认 5）
  *   WORKER_RPM_LIMIT    全局 RPM 上限（默认 100，跨所有 worker 进程）

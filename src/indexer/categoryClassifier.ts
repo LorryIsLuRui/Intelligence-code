@@ -121,7 +121,7 @@ export async function resolveCategory(
         const { name } = r;
         const ruleCategory =
             inferCategoryFromPath(r.path) || inferCategoryFromName(name);
-        console.error(`===from ruleCategory`, name, ruleCategory);
+        // console.error(`===from ruleCategory`, name, ruleCategory);
         if (ruleCategory) {
             return {
                 ...r,
@@ -130,7 +130,7 @@ export async function resolveCategory(
         }
         // TODO: 这里有问题，embedding是语义模板向量，categoryEmbeddingsCache是单个词的向量，相似度必然是<0.3
         const emd = categoryFromEmbedding(vecs[i]);
-        console.error(`===from categoryFromEmbedding`, name, emd);
+        // console.error(`===from categoryFromEmbedding`, name, emd);
         if (emd) {
             return {
                 ...r,
@@ -138,7 +138,7 @@ export async function resolveCategory(
             };
         }
         const cateLlm = await categoryFromLLM(r.content);
-        console.error(`===from categoryFromLLM`, name, cateLlm);
+        // console.error(`===from categoryFromLLM`, name, cateLlm);
         return {
             ...r,
             category: cateLlm,
