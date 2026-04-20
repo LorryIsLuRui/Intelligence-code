@@ -5,7 +5,6 @@
 - Tool: `get_symbol_detail`
 - Tool: `search_by_structure`
 - Tool: `reindex`
-- Tool: `recommend_component`
 - Tool: `incUsage`
 - Prompt: `reusable-code-advisor`
 - Cursor Skill：`reusable-code-advisor`（`.cursor/skills/reusable-code-advisor/`，
@@ -25,8 +24,10 @@
 
 ## 2)配置流水线
 
-```
-    - uses: lorrylurui/code-intelligence-check@v1
+```yml
+    - uses: LorryIsLuRui/code-intelligence-ci-index@v1
+    with:
+        symbols-table: ${{ inputs.symbols-table }}
 ```
 
 ## 3) 项目根目录环境变量

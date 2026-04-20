@@ -7,18 +7,10 @@ branding:
     color: 'blue'
 
 inputs:
-    pg-url:
-        description: 'PostgreSQL 连接字符串，如 postgresql://user:pass@host:5432/dbname'
-        required: false
-        default: ''
     symbols-table:
         description: 'Symbols 表名'
-        required: false
+        required: true
         default: 'symbols'
-    is-mock-mode:
-        description: '是否使用 mock 模式（true 时跳过索引）'
-        required: false
-        default: 'true'
 
 runs:
     using: 'composite'
@@ -58,9 +50,7 @@ runs:
           shell: bash
 
         - name: Run incremental index
-          if: inputs.is-mock-mode == 'false'
           env:
-              PG_URL: ${{ inputs.pg-url }}
               SYMBOLS_TABLE: ${{ inputs.symbols-table }}
           run: |
               npm run ci-index -- \

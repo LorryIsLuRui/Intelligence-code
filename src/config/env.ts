@@ -59,7 +59,7 @@ export const env = {
     get pgUrl() {
         return (
             process.env.PG_URL ??
-            'postgresql://postgres:devpassword@127.0.0.1:5432/code_intelligence'
+            'postgresql://postgres:devpassword@127.0.0.1:5432/code_intelligence' // TODO: 替换为公网实例地址
         );
     },
     /** symbols 表名，可通过 SYMBOLS_TABLE 环境变量配置 */
