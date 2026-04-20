@@ -12,7 +12,7 @@ export const searchSymbolsInput = z.object({
     semantic: z.boolean().optional().default(false),
     limit: z.number().int().min(1).max(100).optional().default(20),
 });
-const THREADHOLD_SIMILARITY_FOR_FINAL = 0.6;
+const SCORE_THRESHOLD_FOR_FINAL = 0.45; // 综合排序分阈值（语义相似度占50%权重，原始0.5相似度 ≈ 综合0.35起）
 const TOP_K_FOR_FINAL_RESULTS = 20; // 结果上限,返回相似度高的，保证数据质量
 
 export function createSearchSymbolsTool(repository: SymbolRepository) {
@@ -50,11 +50,7 @@ export function createSearchSymbolsTool(repository: SymbolRepository) {
                                   (simById.get(item.symbol.id) ?? 0).toFixed(4)
                               ),
                           }))
-                          .filter(
-                              (x) =>
-                                  x.semanticSimilarity >=
-                                  THREADHOLD_SIMILARITY_FOR_FINAL
-                          ) // 阈值过滤，去掉明显不相关的结果
+                          .filter((x) => x.score >= SCORE_THRESHOLD_FOR_FINAL) // 基于综合排序分过滤，保留 usage/recency 高的结果
                           .slice(0, TOP_K_FOR_FINAL_RESULTS)
                     : hits.map((h) => ({
                           id: h.symbol.id,
@@ -89,7 +85,7 @@ export function createSearchSymbolsTool(repository: SymbolRepository) {
                           reason: item.reason.summary,
                           reasonDetail: item.reason,
                       }))
-                      .filter((x) => x.score >= THREADHOLD_SIMILARITY_FOR_FINAL) // 阈值过滤，去掉明显不相关的结果
+                      .filter((x) => x.score >= SCORE_THRESHOLD_FOR_FINAL) // 基于综合排序分过滤
                       .slice(0, TOP_K_FOR_FINAL_RESULTS)
                 : rows.map((r) => ({
                       id: r.id,
