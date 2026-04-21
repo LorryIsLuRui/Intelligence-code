@@ -9,6 +9,7 @@
 import { createHash } from 'node:crypto';
 import { Node, ParameterDeclaration, SyntaxKind } from 'ts-morph';
 import type { CodeSymbol } from '../types/symbol.js';
+import { makeParamPlaceholder } from './paramPlaceholder.js';
 
 // ─────────────────────────────────────────────
 // 内置类型白名单：不替换为 $T
@@ -112,7 +113,9 @@ export function normalizeNode(node: Node): string {
     let paramIdx = 0;
 
     function allocParam(name: string): string {
-        if (!paramNames.has(name)) paramNames.set(name, `$p${paramIdx++}`);
+        if (!paramNames.has(name)) {
+            paramNames.set(name, makeParamPlaceholder(paramIdx++));
+        }
         return paramNames.get(name)!;
     }
 
@@ -223,7 +226,7 @@ function normalizeParameter(
         return `${prefix}{${destrProps.join(',')}}:${typeStr}${suffix}`;
     }
 
-    return `${prefix}$p${index}:${typeStr}${suffix}`;
+    return `${makeParamPlaceholder(index, param.isRestParameter())}:${typeStr}${suffix}`;
 }
 
 function normalizeTypeWithStructure(typeNode: Node): string {
@@ -246,6 +249,7 @@ function normalizeTypeWithStructure(typeNode: Node): string {
     // 如果是类型引用（e.g. Param, Array<string>, Promise<User>）
     if (Node.isTypeReference(typeNode)) {
         const typeName = typeNode.getTypeName().getText();
+        const normalizedTypeName = normalizeTypeName(typeName);
 
         // 优先处理泛型参数（不管是否在白名单中）
         const typeArgs = typeNode.getTypeArguments();
@@ -253,7 +257,7 @@ function normalizeTypeWithStructure(typeNode: Node): string {
             const normalizedArgs = typeArgs.map((arg) =>
                 normalizeTypeWithStructure(arg)
             );
-            return `${typeName}<${normalizedArgs.join(',')}>`;
+            return `${normalizedTypeName}<${normalizedArgs.join(',')}>`;
         }
 
         // 没有泛型参数时，检查是否是基础类型
@@ -293,7 +297,7 @@ function normalizeTypeWithStructure(typeNode: Node): string {
             // 解析失败，回退到类型名
         }
 
-        return typeName;
+        return normalizedTypeName;
     }
 
     // 其他情况（联合类型、交叉类型、基础类型等）

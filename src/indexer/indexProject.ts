@@ -24,6 +24,7 @@ import {
     inferCategoryFromName,
 } from './heuristics.js';
 import { parseJsFile } from './babelParser.js';
+import { isParamPlaceholder } from './paramPlaceholder.js';
 import { computeFileHash, computeSemanticHash } from './tsAstNormalizer.js';
 
 const CALLERS_LIMIT = 20;
@@ -70,8 +71,11 @@ function mergeCallableMeta(
     if (symbolType === 'component' && params?.length) {
         const props = [
             ...new Set([...(paramTypeFields ?? []), ...params]),
-        ].filter((name) => name.toLowerCase() !== 'props');
-        return { ...rest, props: props.length ? props : params };
+        ].filter(
+            (name) =>
+                name.toLowerCase() !== 'props' && !isParamPlaceholder(name)
+        ).sort();
+        return { ...rest, ...(props.length ? { props } : {}) };
     }
     return { ...rest, ...(params?.length ? { params } : {}) };
 }

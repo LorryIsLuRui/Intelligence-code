@@ -37,6 +37,8 @@ export function hasJsxInNode(node: Node): boolean {
  * @returns 命中 `components|features|...`
  */
 export function inferCategoryFromPath(filePath: string): string | null {
+    const normalized = filePath.toLowerCase().replace(/\\/g, '/');
+    const segments = normalized.split('/').filter(Boolean);
     const markers = [
         'components',
         'features',
@@ -50,9 +52,10 @@ export function inferCategoryFromPath(filePath: string): string | null {
         'types',
         'apis',
     ];
-    for (const m of markers) {
-        if (filePath.toLowerCase().includes(`/${m}/`)) {
-            return m;
+    for (let i = segments.length - 1; i >= 0; i--) {
+        const segment = segments[i];
+        if (markers.includes(segment as (typeof markers)[number])) {
+            return segment;
         }
     }
     return null;
@@ -73,8 +76,7 @@ export function inferCategoryFromName(originName: string): string | null {
 }
 
 export function isHookLike(exportName: string): boolean {
-    if (/use$/i.test(exportName)) return true;
-    return false;
+    return /^use[A-Z0-9_]/.test(exportName);
 }
 
 type MaybeJsDoc = { getJsDocs?: () => Array<{ getDescription(): string }> };

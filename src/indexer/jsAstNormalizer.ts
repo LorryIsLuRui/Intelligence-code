@@ -17,6 +17,7 @@
 import { createHash } from 'node:crypto';
 import * as t from '@babel/types';
 import type { CodeSymbol } from '../types/symbol.js';
+import { makeParamPlaceholder } from './paramPlaceholder.js';
 
 // ─────────────────────────────────────────────
 // JSDoc 类型提取
@@ -60,6 +61,10 @@ function parseJSDoc(jsdoc: string): JSDocInfo {
 function normalizeType(type: string): string {
     type = type.trim().toLowerCase();
 
+    if (type.includes('window') || type.includes('htmlelement')) {
+        return 'object';
+    }
+
     if (type.includes('string')) return 'string';
     if (type.includes('number')) return 'number';
     if (type.includes('boolean')) return 'boolean';
@@ -73,30 +78,52 @@ function normalizeType(type: string): string {
 
     return 'unknown';
 }
+
+function normalizeObjectPattern(param: any, jsdoc?: JSDocInfo): string {
+    const props = param.properties
+        .map((p: any) => {
+            if (p.type === 'ObjectProperty' && p.key?.name) {
+                const name = p.key.name;
+                const type = jsdoc?.params[name] ?? 'unknown';
+                return `${name}:${type}`;
+            }
+            if (p.type === 'RestElement' && p.argument?.name) {
+                return `...${p.argument.name}:unknown`;
+            }
+            return 'unknown';
+        })
+        .sort();
+
+    return `{${props.join(';')}}`;
+}
+
 function normalizeParam(
     param: any,
     fallbackName: string,
     jsdoc?: JSDocInfo
 ): string {
     if (param.type === 'Identifier') {
-        const name = param.name;
-
-        const type = jsdoc?.params[name] ?? 'unknown';
-
-        return `${name}:${type}`;
+        const type = jsdoc?.params[param.name] ?? 'unknown';
+        return `${fallbackName}:${type}`;
     }
 
     if (param.type === 'ObjectPattern') {
-        const props = param.properties.map((p: any) => {
-            if (p.key?.name) {
-                const name = p.key.name;
-                const type = jsdoc?.params[name] ?? 'unknown';
-                return `${name}:${type}`;
-            }
-            return 'unknown';
-        });
+        return normalizeObjectPattern(param, jsdoc);
+    }
 
-        return `{${props.sort().join(';')}}`;
+    if (param.type === 'AssignmentPattern') {
+        const left = normalizeParam(param.left, fallbackName, jsdoc);
+        return `${left}=$default`;
+    }
+
+    if (param.type === 'RestElement') {
+        if (param.argument?.type === 'Identifier') {
+            const type = jsdoc?.params[param.argument.name] ?? 'unknown';
+            return `...${fallbackName}:${type}`;
+        }
+        if (param.argument?.type === 'ObjectPattern') {
+            return `...${normalizeObjectPattern(param.argument, jsdoc)}`;
+        }
     }
 
     return `${fallbackName}:unknown`;
@@ -132,7 +159,7 @@ function normalizeFunction(node: any) {
     const jsdoc = jsdocText ? parseJSDoc(jsdocText) : undefined;
 
     const params = node.params.map((p: any, i: number) =>
-        normalizeParam(p, `$p${i}`, jsdoc)
+        normalizeParam(p, makeParamPlaceholder(i), jsdoc)
     );
 
     const returnType = jsdoc?.returnType ?? inferReturnType(node);
@@ -145,7 +172,7 @@ function normalizeArrowFunction(node: t.ArrowFunctionExpression) {
     const jsdoc = jsdocText ? parseJSDoc(jsdocText) : undefined;
 
     const params = node.params.map((p: any, i: number) =>
-        normalizeParam(p, `$p${i}`, jsdoc)
+        normalizeParam(p, makeParamPlaceholder(i), jsdoc)
     );
     // const params = node.params.map((p, i) => normalizeParam(p, `$p${i}`));
 
@@ -196,6 +223,20 @@ export function inferBehaviorFromJS(node: t.Node): string[] {
 
             if (name.includes('settimeout')) {
                 behavior.push('uses timer');
+            }
+        }
+
+        if (
+            t.isCallExpression(n) &&
+            t.isMemberExpression(n.callee) &&
+            t.isIdentifier(n.callee.property)
+        ) {
+            const prop = n.callee.property.name;
+            if (
+                prop === 'getBoundingClientRect' ||
+                prop === 'getComputedStyle'
+            ) {
+                behavior.push('reads dom layout');
             }
         }
 
