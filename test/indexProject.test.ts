@@ -75,10 +75,7 @@ describe('indexProject project-level indexing', () => {
         const hook = byName(rows, 'useCounter');
         expect(hook.type).toBe('hook');
         expect(stringArray(hook.meta.params)).toEqual(['$p0']);
-        expect(stringArray(hook.meta.hooks)).toEqual([
-            'useEffect',
-            'useState',
-        ]);
+        expect(stringArray(hook.meta.hooks)).toEqual(['useEffect', 'useState']);
         expect(stringArray(hook.meta.sideEffects)).toEqual([
             'storage',
             'timer',
@@ -118,10 +115,7 @@ describe('indexProject project-level indexing', () => {
         expect(jsBanner.type).toBe('component');
         expect(jsBanner.category).toBe('components');
         expect(jsBanner.description).toBe('展示一个可关闭横幅');
-        expect(stringArray(jsBanner.meta.params)).toEqual([
-            'onClose',
-            'title',
-        ]);
+        expect(stringArray(jsBanner.meta.params)).toEqual(['onClose', 'title']);
         expect(jsBanner.meta.returnType).toBe('object');
         expect(stringArray(jsBanner.meta.sideEffects)).toEqual(['storage']);
     });
@@ -136,9 +130,7 @@ describe('indexProject project-level indexing', () => {
         expect(stringArray(persistState.meta.sideEffects)).toEqual(['storage']);
 
         const mutateState = byName(rows, 'mutateState');
-        expect(stringArray(mutateState.meta.sideEffects)).toEqual([
-            'mutation',
-        ]);
+        expect(stringArray(mutateState.meta.sideEffects)).toEqual(['mutation']);
 
         const buildGreeting = byName(rows, 'buildGreeting');
         expect(relationArray(buildGreeting.meta.callees)).toEqual(
