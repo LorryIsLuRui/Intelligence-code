@@ -19,11 +19,14 @@ export function createSearchSymbolsTool(repository: SymbolRepository) {
     return {
         name: 'search_symbols',
         description:
-            '搜索项目中已有的可复用代码块（函数、组件、Hook、类型等）。在生成新代码之前必须先调用本工具，确认是否已有实现。\n' +
+            '【降级链第二步，非首选工具】搜索项目中已有的可复用代码块（函数、组件、Hook、类型等）。\n' +
+            '⚠️ 调用顺序约束：对于"帮我找 X 组件/util/函数"类问题，第一步必须是 recommend_component，不得跳过直接调用本工具。\n' +
+            '本工具仅在 recommend_component 返回 null（无推荐）后才允许调用，作为第二级降级检索。\n' +
             '- 有明确名称时（如 "useDebounce"）：semantic=false（默认），直接关键词检索\n' +
-            '- 描述功能意图时（如 "防抖"、"处理表单提交"）：semantic=true，进行语义检索（需 embedding 服务已就绪）\n' +
-            '- 不确定 type 时省略该参数，不要猜测\n' +
-            '- 返回结果含 semanticSimilarity 字段：>0.85 高置信度可直接推荐，0.6-0.85 需结合 description 判断，<0.6 说明可能无合适实现',
+            '- 描述功能意图时（如 "防抖"、"处理表单提交"）：semantic=true，进行语义检索\n' +
+            '- 不确定 type 时省略该参数\n' +
+            '- 本工具返回结果后，必须立即按固定模板输出，停止所有后续工具调用。\n' +
+            '- 本工具返回空结果后，输出无结果模板，完全停止，禁止 grep/read file/文件系统兜底。',
         inputSchema: searchSymbolsInput.shape,
         handler: async (input: z.infer<typeof searchSymbolsInput>) => {
             if (input.semantic) {
@@ -61,6 +64,46 @@ export function createSearchSymbolsTool(repository: SymbolRepository) {
                           usageCount: h.symbol.usageCount,
                           semanticSimilarity: Number(h.similarity.toFixed(4)),
                       }));
+                // if (resultRows.length === 0) {
+                //     const keywordRows = await repository.search(
+                //         input.query,
+                //         input.type
+                //     );
+                //     const fallbackRows = input.ranked
+                //         ? rankSymbols(input.query, keywordRows)
+                //               .map((item) => ({
+                //                   id: item.symbol.id,
+                //                   name: item.symbol.name,
+                //                   type: item.symbol.type,
+                //                   path: item.symbol.path,
+                //                   description: item.symbol.description,
+                //                   usageCount: item.symbol.usageCount,
+                //                   score: item.score,
+                //                   reason: item.reason.summary,
+                //                   reasonDetail: item.reason,
+                //               }))
+                //               .filter(
+                //                   (x) => x.score >= SCORE_THRESHOLD_FOR_FINAL
+                //               )
+                //               .slice(0, TOP_K_FOR_FINAL_RESULTS)
+                //         : keywordRows.map((r) => ({
+                //               id: r.id,
+                //               name: r.name,
+                //               type: r.type,
+                //               path: r.path,
+                //               description: r.description,
+                //               usageCount: r.usageCount,
+                //           }));
+
+                //     return {
+                //         content: [
+                //             {
+                //                 type: 'text' as const,
+                //                 text: JSON.stringify(fallbackRows, null, 2),
+                //             },
+                //         ],
+                //     };
+                // }
                 return {
                     content: [
                         {

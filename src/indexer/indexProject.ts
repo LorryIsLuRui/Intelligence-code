@@ -4,7 +4,9 @@
  */
 
 import fg from 'fast-glob';
-import { join, resolve } from 'node:path';
+import * as babelParser from '@babel/parser';
+import * as bt from '@babel/types';
+import { dirname, join, resolve } from 'node:path';
 import { Node, Project, SyntaxKind, type SourceFile } from 'ts-morph';
 import { readFileSync, existsSync } from 'node:fs';
 import type { SymbolType } from '../types/symbol.js';
@@ -28,6 +30,47 @@ import { isParamPlaceholder } from './paramPlaceholder.js';
 import { computeFileHash, computeSemanticHash } from './tsAstNormalizer.js';
 
 const CALLERS_LIMIT = 20;
+const BABEL_PLUGINS = [
+    'jsx',
+    'typescript',
+    'classPrivateMethods',
+    'classPrivateProperties',
+    'decorators-legacy',
+    'doExpressions',
+    'exportDefaultFrom',
+    'functionBind',
+    'logicalAssignment',
+    'nullishCoalescingOperator',
+    'objectRestSpread',
+    'optionalChaining',
+    'optionalCatchBinding',
+] as const;
+
+function isCallerDebugEnabled(): boolean {
+    return /^(1|true|yes|on)$/i.test(process.env.DEBUG_CALLERS ?? '');
+}
+
+function getCallerDebugMatch(): string {
+    return (process.env.DEBUG_CALLERS_MATCH ?? '').trim().toLowerCase();
+}
+
+function shouldLogCallerDebug(
+    parts: Array<string | null | undefined>
+): boolean {
+    if (!isCallerDebugEnabled()) return false;
+    const match = getCallerDebugMatch();
+    if (!match) return true;
+    return parts.some((part) => part?.toLowerCase().includes(match));
+}
+
+function logCallerDebug(
+    stage: string,
+    payload: Record<string, unknown>,
+    parts: Array<string | null | undefined>
+): void {
+    if (!shouldLogCallerDebug(parts)) return;
+    console.error(`[callers.debug] ${stage} ${JSON.stringify(payload)}`);
+}
 
 /** 已收集的符号映射：key = "name|path"，用于快速查找 */
 type SymbolMap = Map<
@@ -69,12 +112,12 @@ function mergeCallableMeta(
     const paramTypeFields = raw.paramTypeFields as string[] | undefined;
     const { params: _p, paramTypeFields: _f, ...rest } = raw;
     if (symbolType === 'component' && params?.length) {
-        const props = [
-            ...new Set([...(paramTypeFields ?? []), ...params]),
-        ].filter(
-            (name) =>
-                name.toLowerCase() !== 'props' && !isParamPlaceholder(name)
-        ).sort();
+        const props = [...new Set([...(paramTypeFields ?? []), ...params])]
+            .filter(
+                (name) =>
+                    name.toLowerCase() !== 'props' && !isParamPlaceholder(name)
+            )
+            .sort();
         return { ...rest, ...(props.length ? { props } : {}) };
     }
     return { ...rest, ...(params?.length ? { params } : {}) };
@@ -266,6 +309,203 @@ export const DEFAULT_IGNORE = [
     '**/.turbo/**',
 ];
 
+function resolveImportedSourceFile(
+    currentFilePath: string,
+    moduleSpecifier: string
+): string | null {
+    if (!moduleSpecifier.startsWith('.')) return null;
+
+    const base = resolve(dirname(currentFilePath), moduleSpecifier);
+    const candidates = [
+        base,
+        `${base}.ts`,
+        `${base}.tsx`,
+        `${base}.js`,
+        `${base}.jsx`,
+        join(base, 'index.ts'),
+        join(base, 'index.tsx'),
+        join(base, 'index.js'),
+        join(base, 'index.jsx'),
+    ];
+
+    for (const candidate of candidates) {
+        if (existsSync(candidate)) return candidate;
+    }
+    return null;
+}
+
+function applyRelationMaps(
+    rows: IndexedSymbolRow[],
+    callersMap: Map<string, Set<string>>,
+    calleesMap: Map<string, Set<string>>
+): void {
+    for (const row of rows) {
+        const key = `${row.name}|${row.path}`;
+        const callers = callersMap.get(key);
+        const callees = calleesMap.get(key);
+
+        if (callers?.size) {
+            row.meta.callers = [...callers].slice(0, CALLERS_LIMIT).map((s) => {
+                const [name, ...pathParts] = s.split('|');
+                return { name, path: pathParts.join('|') };
+            });
+        }
+        if (callees?.size) {
+            row.meta.callees = [...callees].slice(0, CALLERS_LIMIT).map((s) => {
+                const [name, ...pathParts] = s.split('|');
+                return { name, path: pathParts.join('|') };
+            });
+        }
+    }
+}
+
+function analyzeJsRelations(
+    jsFiles: string[],
+    symbolMap: SymbolMap,
+    projectRoot: string,
+    rows: IndexedSymbolRow[]
+): void {
+    const callersMap = new Map<string, Set<string>>();
+    const calleesMap = new Map<string, Set<string>>();
+
+    for (const filePath of jsFiles) {
+        const relPath = getRelativePathForDisplay(projectRoot, filePath);
+        const callerRows = rows.filter((row) => row.path === relPath);
+        if (callerRows.length === 0) continue;
+
+        logCallerDebug(
+            'js-file-start',
+            {
+                filePath,
+                relPath,
+                callerRows: callerRows.map((row) => row.name),
+            },
+            [filePath, relPath, ...callerRows.map((row) => row.name)]
+        );
+
+        let ast: bt.File;
+        try {
+            ast = babelParser.parse(readFileSync(filePath, 'utf-8'), {
+                sourceType: 'module',
+                plugins: [...BABEL_PLUGINS],
+                strictMode: false,
+            });
+        } catch (error) {
+            console.error(
+                `[analyzeJsRelations] Failed to parse ${filePath}:`,
+                error
+            );
+            continue;
+        }
+
+        for (const stmt of ast.program.body) {
+            if (!bt.isImportDeclaration(stmt)) continue;
+
+            const moduleSpecifier = stmt.source.value;
+            if (typeof moduleSpecifier !== 'string') continue;
+
+            const importedFile = resolveImportedSourceFile(
+                filePath,
+                moduleSpecifier
+            );
+            logCallerDebug(
+                'js-import-resolve',
+                {
+                    from: relPath,
+                    moduleSpecifier,
+                    importedFile,
+                },
+                [relPath, moduleSpecifier, importedFile]
+            );
+            if (!importedFile) continue;
+
+            const importedRelPath = getRelativePathForDisplay(
+                projectRoot,
+                importedFile
+            );
+            const importedNames = stmt.specifiers
+                .map((spec) => {
+                    if (bt.isImportSpecifier(spec)) {
+                        return bt.isIdentifier(spec.imported)
+                            ? spec.imported.name
+                            : spec.imported.value;
+                    }
+                    if (bt.isImportDefaultSpecifier(spec)) {
+                        return spec.local.name;
+                    }
+                    return null;
+                })
+                .filter((name): name is string => Boolean(name));
+
+            logCallerDebug(
+                'js-import-specifiers',
+                {
+                    from: relPath,
+                    moduleSpecifier,
+                    importedRelPath,
+                    importedNames,
+                },
+                [relPath, moduleSpecifier, importedRelPath, ...importedNames]
+            );
+
+            for (const callerRow of callerRows) {
+                const callerKey = `${callerRow.name}|${callerRow.path}`;
+                for (const importedName of importedNames) {
+                    const targetKey = `${importedName}|${importedRelPath}`;
+                    const target = symbolMap.get(targetKey);
+                    logCallerDebug(
+                        'js-import-target',
+                        {
+                            callerKey,
+                            targetKey,
+                            hit: Boolean(target),
+                            availableKeysInFile: [...symbolMap.keys()].filter(
+                                (key) => key.endsWith(`|${importedRelPath}`)
+                            ),
+                        },
+                        [callerKey, targetKey, importedRelPath, importedName]
+                    );
+                    if (!target) continue;
+
+                    const calleeSet =
+                        calleesMap.get(callerKey) || new Set<string>();
+                    calleeSet.add(`${target.name}|${target.path}`);
+                    calleesMap.set(callerKey, calleeSet);
+
+                    const callerSet =
+                        callersMap.get(`${target.name}|${target.path}`) ||
+                        new Set<string>();
+                    callerSet.add(callerKey);
+                    callersMap.set(`${target.name}|${target.path}`, callerSet);
+
+                    logCallerDebug(
+                        'js-link-added',
+                        {
+                            callerKey,
+                            calleeKey: `${target.name}|${target.path}`,
+                        },
+                        [callerKey, target.name, target.path]
+                    );
+                }
+            }
+        }
+    }
+
+    applyRelationMaps(rows, callersMap, calleesMap);
+
+    for (const row of rows) {
+        logCallerDebug(
+            'js-row-final',
+            {
+                row: `${row.name}|${row.path}`,
+                callers: row.meta.callers ?? [],
+                callees: row.meta.callees ?? [],
+            },
+            [row.name, row.path]
+        );
+    }
+}
+
 /**
  * 按 glob 收集文件，用 ts-morph 加载并遍历每个文件的导出，生成全部代码块行。
  * 同时分析调用关系，填充 meta.callers / meta.callees。
@@ -354,6 +594,14 @@ export async function indexProject(
                             });
                         }
                         symbolMap.get(key)!.exports.add(exportName);
+                        logCallerDebug(
+                            'symbol-map-add-ts',
+                            {
+                                key,
+                                exportName,
+                            },
+                            [row.name, row.path, exportName]
+                        );
                     }
                 }
             }
@@ -377,6 +625,14 @@ export async function indexProject(
                     });
                 }
                 symbolMap.get(key)!.exports.add(row.name);
+                logCallerDebug(
+                    'symbol-map-add-js',
+                    {
+                        key,
+                        exportName: row.name,
+                    },
+                    [row.name, row.path]
+                );
             }
         } catch (e) {
             console.error(`[indexProject] Failed to parse ${file}:`, e);
@@ -392,6 +648,10 @@ export async function indexProject(
         });
         project.addSourceFilesAtPaths(tsFiles);
         analyzeRelations(project, symbolMap, projectRoot, out);
+    }
+
+    if (jsFiles.length > 0) {
+        analyzeJsRelations(jsFiles, symbolMap, projectRoot, out);
     }
 
     return out;
@@ -509,26 +769,18 @@ function analyzeRelations(
         });
     }
 
-    // 写入 rows 的 meta
-    for (const row of rows) {
-        const key = `${row.name}|${row.path}`;
-        const callers = callersMap.get(key);
-        const callees = calleesMap.get(key);
+    applyRelationMaps(rows, callersMap, calleesMap);
 
-        if (callers?.size) {
-            row.meta.callers = [...callers].slice(0, CALLERS_LIMIT).map((s) => {
-                // ✅ 反序列化回对象
-                const [name, ...pathParts] = s.split('|');
-                return { name, path: pathParts.join('|') };
-            });
-        }
-        if (callees?.size) {
-            row.meta.callees = [...callees].slice(0, CALLERS_LIMIT).map((s) => {
-                const [name, ...pathParts] = s.split('|');
-                // path:为了防止路径里万一含有 | 字符时截断错误。
-                return { name, path: pathParts.join('|') };
-            });
-        }
+    for (const row of rows) {
+        logCallerDebug(
+            'ts-row-final',
+            {
+                row: `${row.name}|${row.path}`,
+                callers: row.meta.callers ?? [],
+                callees: row.meta.callees ?? [],
+            },
+            [row.name, row.path]
+        );
     }
 
     console.error(`[analyzeRelations] processed ${rows.length} symbols`);

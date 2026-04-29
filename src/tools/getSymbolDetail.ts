@@ -11,7 +11,8 @@ export function createGetSymbolDetailTool(repository: SymbolRepository) {
         description:
             '获取单个代码块的完整详情（含源码、参数类型、调用关系、副作用）。\n' +
             '仅在以下情况调用：search_symbols 返回的摘要信息不足以判断是否适用（如签名模糊、副作用不明确）。\n' +
-            '通常对 top 1-3 候选调用，不要对所有结果批量调用。',
+            '通常对 top 1-3 候选调用，不要对所有结果批量调用。\n' +
+            '约束：若 recommend_component 已返回结果，默认不要调用本工具；仅在用户明确要求“看源码细节/二次验证”时调用。',
         inputSchema: getSymbolDetailInput.shape,
         handler: async (input: z.infer<typeof getSymbolDetailInput>) => {
             const symbol = await repository.getByName(input.name);

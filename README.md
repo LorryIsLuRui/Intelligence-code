@@ -4,10 +4,19 @@
 - Tool: `search_symbols`
 - Tool: `get_symbol_detail`
 - Tool: `search_by_structure`
+- Tool: `recommend_component`
 - Tool: `reindex`
 - Tool: `incUsage`
 - Prompt: `reusable-code-advisor`
 - Cursor Skill：`reusable-code-advisor`（`.cursor/skills/reusable-code-advisor/`，
+
+## 开发
+
+```
+    1. npm run dev:mcp 启动mcp  server
+    2. npm run embedding:dev 启动本地python环境
+    3. npm run worker:embedding 启动worker队列
+```
 
 ## 1) 配置mcp servers
 

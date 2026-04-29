@@ -38,6 +38,37 @@ export interface ReindexResult {
     upserted: boolean;
 }
 
+function isCallerDebugEnabled(): boolean {
+    return /^(1|true|yes|on)$/i.test(process.env.DEBUG_CALLERS ?? '');
+}
+
+function getCallerDebugMatch(): string {
+    return (process.env.DEBUG_CALLERS_MATCH ?? '').trim().toLowerCase();
+}
+
+function debugMatchedFiles(
+    stage: string,
+    files: string[],
+    projectRoot: string
+): void {
+    if (!isCallerDebugEnabled()) return;
+    const match = getCallerDebugMatch();
+    const normalized = files.map((file) =>
+        getRelativePathForDisplay(projectRoot, file)
+    );
+    const matched = match
+        ? normalized.filter((file) => file.toLowerCase().includes(match))
+        : normalized;
+
+    console.error(
+        `[callers.debug] ${stage} ${JSON.stringify({
+            match: match || null,
+            count: matched.length,
+            files: matched,
+        })}`
+    );
+}
+
 export async function runReindex(
     options: ReindexOptions = {}
 ): Promise<ReindexResult> {
@@ -73,6 +104,7 @@ export async function runReindex(
         dot: false,
     });
     console.error(`[reindex] glob found ${allFiles.length} file(s)`);
+    debugMatchedFiles('reindex-all-files', allFiles, projectRoot);
 
     // ─── 2. file_hash 过滤：跳过 AST 未变的文件（CPU 优化）────────────────
     // forceRebuild 时跳过此过滤，file_hash 不可复用（模板/模型变更时相同文件产出不同 content）
@@ -110,10 +142,20 @@ export async function runReindex(
         console.error(
             `[reindex] file_hash: ${skippedFiles} unchanged (skipped), ${filesToIndex.length} changed (to parse)`
         );
+        const skippedAbsFiles = allFiles.filter(
+            (absPath) => !filesToIndex.includes(absPath)
+        );
+        debugMatchedFiles('reindex-files-to-parse', filesToIndex, projectRoot);
+        debugMatchedFiles(
+            'reindex-files-skipped',
+            skippedAbsFiles,
+            projectRoot
+        );
     } else if (forceRebuild) {
         console.error(
             `[reindex] forceRebuild=true, skipping file_hash filter — parsing all ${allFiles.length} file(s)`
         );
+        debugMatchedFiles('reindex-files-to-parse', filesToIndex, projectRoot);
     }
 
     if (filesToIndex.length === 0) {

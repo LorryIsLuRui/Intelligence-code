@@ -19,7 +19,8 @@ export function createSearchByStructureTool(repository: SymbolRepository) {
         description:
             '按代码块的结构字段（props/params/hooks）检索，适合已知接口形态时使用。\n' +
             '示例：需要一个接受 value、onChange、error 三个 prop 的输入组件 → fields: ["value", "onChange", "error"], type: "component"\n' +
-            '与 search_symbols 配合：先语义检索候选，再用本工具做 API 结构过滤以精确匹配。',
+            '与 search_symbols 配合：先语义检索候选，再用本工具做 API 结构过滤以精确匹配。\n' +
+            '约束：当用户是在问“有没有可复用组件/帮我找组件”时，默认不要调用本工具；仅在用户明确要求二次验证时使用。',
         inputSchema: searchByStructureInput.shape,
         handler: async (input: z.infer<typeof searchByStructureInput>) => {
             const rows = await repository.searchByStructure(input.fields, {

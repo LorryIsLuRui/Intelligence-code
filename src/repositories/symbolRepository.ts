@@ -19,7 +19,7 @@ interface SymbolRow {
     embedding?: string | null; // pgvector 返回字符串 "[x1,x2,...]"
     similarity?: string; // searchSemanticHits 时附加
 }
-const SIMILARITY_THRESHOLD = 0.5;
+const SIMILARITY_THRESHOLD = 0;
 const TOP_K = 20;
 
 const inMemorySymbols: CodeSymbol[] = [
@@ -107,6 +107,43 @@ function getMetaArray(
     return value.filter((v): v is string => typeof v === 'string');
 }
 
+function extractSearchTokens(query: string): string[] {
+    const tokens = new Set<string>();
+    const normalized = query.trim().toLowerCase();
+
+    for (const match of normalized.matchAll(/[a-z0-9_]+/g)) {
+        if (match[0].length >= 2) tokens.add(match[0]);
+    }
+
+    for (const match of query.matchAll(/[\u4e00-\u9fff]{2,}/g)) {
+        const text = match[0];
+        for (let index = 0; index < text.length - 1; index += 1) {
+            tokens.add(text.slice(index, index + 2));
+        }
+    }
+
+    return [...tokens];
+}
+
+function buildSearchText(symbol: CodeSymbol): string {
+    return [
+        symbol.name,
+        symbol.path,
+        symbol.description ?? '',
+        JSON.stringify(symbol.meta ?? {}),
+    ]
+        .join(' ')
+        .toLowerCase();
+}
+
+function countTokenMatches(text: string, tokens: string[]): number {
+    return tokens.reduce(
+        (count, token) =>
+            text.includes(token.toLowerCase()) ? count + 1 : count,
+        0
+    );
+}
+
 export class SymbolRepository {
     private pool: pg.Pool | null;
 
@@ -115,18 +152,41 @@ export class SymbolRepository {
     }
 
     async search(query: string, type?: SymbolType): Promise<CodeSymbol[]> {
+        console.error(
+            '[code-intelligence-mcp] repository.search.start query=%s type=%s table=%s searchableStatus=%s hasPool=%s',
+            query,
+            type ?? '',
+            env.symbolsTable,
+            String(SEARCHABLE_STATUS),
+            String(Boolean(this.pool))
+        );
+
         if (!this.pool) {
             const q = query.toLowerCase();
-            return inMemorySymbols.filter((s) => {
+            const tokens = extractSearchTokens(query);
+            const matched = inMemorySymbols.filter((s) => {
                 const typeOk = type ? s.type === type : true;
+                const text = buildSearchText(s);
                 return (
                     typeOk &&
-                    (s.name.toLowerCase().includes(q) ||
-                        (s.description ?? '').toLowerCase().includes(q))
+                    (text.includes(q) || countTokenMatches(text, tokens) >= 2)
                 );
             });
+            console.error(
+                '[code-intelligence-mcp] repository.search.memory count=%s top=%s',
+                String(matched.length),
+                JSON.stringify(
+                    matched.slice(0, 3).map((s) => ({
+                        id: s.id,
+                        name: s.name,
+                        path: s.path,
+                    }))
+                )
+            );
+            return matched;
         }
 
+        const tokens = extractSearchTokens(query);
         const params: Array<string | number> = [
             `%${query}%`,
             SEARCHABLE_STATUS,
@@ -134,9 +194,35 @@ export class SymbolRepository {
         let sql = `
       SELECT id, name, type, category, path, description, content, meta::text AS meta, usage_count, created_at
       FROM ${env.symbolsTable}
-      WHERE (name ILIKE $1 OR description ILIKE $1)
+            WHERE (
+              name ILIKE $1 OR
+              description ILIKE $1 OR
+              path ILIKE $1 OR
+              meta::text ILIKE $1
+            )
         AND status = $2
     `;
+
+        if (tokens.length) {
+            const tokenClauses = tokens.map((token) => {
+                // 每个query token都要在name/description/path/meta中至少匹配一次才算匹配，来提升搜索的准确度，避免单个token过于泛匹配导致的排名干扰
+                params.push(`%${token}%`);
+                const index = params.length;
+                return `name ILIKE $${index} OR description ILIKE $${index} OR path ILIKE $${index} OR meta::text ILIKE $${index}`;
+            });
+            sql = `
+      SELECT id, name, type, category, path, description, content, meta::text AS meta, usage_count, created_at
+      FROM ${env.symbolsTable}
+            WHERE (
+              name ILIKE $1 OR
+              description ILIKE $1 OR
+              path ILIKE $1 OR
+              meta::text ILIKE $1 OR
+              (${tokenClauses.join(' OR ')})
+            )
+        AND status = $2
+    `;
+        }
 
         if (type) {
             params.push(type);
@@ -146,6 +232,19 @@ export class SymbolRepository {
         sql += ' ORDER BY usage_count DESC LIMIT 20';
 
         const { rows } = await this.pool.query<SymbolRow>(sql, params);
+        console.error(
+            '[code-intelligence-mcp] repository.search.db table=%s rows=%s top=%s note=name/description only',
+            env.symbolsTable,
+            String(rows.length),
+            JSON.stringify(
+                rows.slice(0, 3).map((r) => ({
+                    id: r.id,
+                    name: r.name,
+                    path: r.path,
+                    type: r.type,
+                }))
+            )
+        );
         return rows.map((r) => mapRow(r));
     }
 
@@ -157,12 +256,29 @@ export class SymbolRepository {
         query: string,
         opts?: { type?: SymbolType; limit?: number }
     ): Promise<Array<{ symbol: CodeSymbol; similarity: number }>> {
+        console.error(
+            '[code-intelligence-mcp] repository.searchSemanticHits.start query=%s type=%s table=%s limit=%s threshold=%s searchableStatus=%s hasPool=%s',
+            query,
+            opts?.type ?? '',
+            env.symbolsTable,
+            String(opts?.limit ?? TOP_K),
+            String(SIMILARITY_THRESHOLD),
+            String(SEARCHABLE_STATUS),
+            String(Boolean(this.pool))
+        );
+
         if (!env.embeddingServiceUrl) {
+            console.error(
+                '[code-intelligence-mcp] repository.searchSemanticHits.error missingEmbeddingServiceUrl'
+            );
             throw new Error(
                 '语义检索需配置 EMBEDDING_SERVICE_URL 并启动嵌入服务'
             );
         }
         if (!this.pool) {
+            console.error(
+                '[code-intelligence-mcp] repository.searchSemanticHits.noPool returnEmpty'
+            );
             return [];
         }
 
@@ -198,16 +314,45 @@ export class SymbolRepository {
         const { rows } = await this.pool.query<
             SymbolRow & { similarity: string }
         >(sql, params);
-        return rows
+        const mapped = rows.map((r) => ({
+            symbol: mapRow(r),
+            similarity: Number(r.similarity),
+        }));
+        const passed = mapped.filter(
+            (x) => x.similarity >= SIMILARITY_THRESHOLD
+        );
+
+        console.error(
+            '[code-intelligence-mcp] repository.searchSemanticHits.db table=%s rawRows=%s passedThreshold=%s topRaw=%s',
+            env.symbolsTable,
+            String(rows.length),
+            String(passed.length),
+            JSON.stringify(
+                mapped.slice(0, 5).map((x) => ({
+                    id: x.symbol.id,
+                    name: x.symbol.name,
+                    path: x.symbol.path,
+                    similarity: Number(x.similarity.toFixed(4)),
+                }))
+            )
+        );
+
+        return passed
             .map((r) => ({
-                symbol: mapRow(r),
-                similarity: Number(r.similarity),
+                symbol: r.symbol,
+                similarity: r.similarity,
             }))
-            .filter((x) => x.similarity >= SIMILARITY_THRESHOLD)
             .slice(0, limit);
     }
 
     async getByName(name: string): Promise<CodeSymbol | null> {
+        console.error(
+            '[code-intelligence-mcp] repository.getByName.start name=%s table=%s hasPool=%s',
+            name,
+            env.symbolsTable,
+            String(Boolean(this.pool))
+        );
+
         if (!this.pool) {
             return (
                 inMemorySymbols.find(
@@ -224,6 +369,12 @@ export class SymbolRepository {
       LIMIT 1
       `,
             [name]
+        );
+
+        console.error(
+            '[code-intelligence-mcp] repository.getByName.db table=%s rows=%s',
+            env.symbolsTable,
+            String(rows.length)
         );
 
         if (rows.length === 0) {
@@ -257,6 +408,16 @@ export class SymbolRepository {
         fields: string[],
         opts?: { type?: SymbolType; category?: string; limit?: number }
     ): Promise<CodeSymbol[]> {
+        console.error(
+            '[code-intelligence-mcp] repository.searchByStructure.start fields=%s type=%s category=%s table=%s limit=%s hasPool=%s',
+            JSON.stringify(fields),
+            opts?.type ?? '',
+            opts?.category ?? '',
+            env.symbolsTable,
+            String(opts?.limit ?? 20),
+            String(Boolean(this.pool))
+        );
+
         const normalized = fields.map((f) => f.trim()).filter(Boolean);
         if (normalized.length === 0) return [];
         const type = opts?.type;
@@ -283,7 +444,19 @@ export class SymbolRepository {
         };
 
         if (!this.pool) {
-            return inMemorySymbols.filter(matchesAll).slice(0, limit);
+            const matched = inMemorySymbols.filter(matchesAll).slice(0, limit);
+            console.error(
+                '[code-intelligence-mcp] repository.searchByStructure.memory matched=%s top=%s',
+                String(matched.length),
+                JSON.stringify(
+                    matched.slice(0, 3).map((s) => ({
+                        id: s.id,
+                        name: s.name,
+                        path: s.path,
+                    }))
+                )
+            );
+            return matched;
         }
 
         const params: Array<string | number> = [];
@@ -305,9 +478,23 @@ export class SymbolRepository {
         sql += ` ORDER BY usage_count DESC LIMIT $${params.length}`;
 
         const { rows } = await this.pool.query<SymbolRow>(sql, params);
-        return rows
-            .map((r) => mapRow(r))
-            .filter(matchesAll)
-            .slice(0, limit);
+        const mapped = rows.map((r) => mapRow(r));
+        const filtered = mapped.filter(matchesAll).slice(0, limit);
+
+        console.error(
+            '[code-intelligence-mcp] repository.searchByStructure.db table=%s scanned=%s matched=%s top=%s',
+            env.symbolsTable,
+            String(rows.length),
+            String(filtered.length),
+            JSON.stringify(
+                filtered.slice(0, 3).map((s) => ({
+                    id: s.id,
+                    name: s.name,
+                    path: s.path,
+                }))
+            )
+        );
+
+        return filtered;
     }
 }
