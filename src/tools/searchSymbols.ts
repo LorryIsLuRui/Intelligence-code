@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { SymbolRepository } from '../repositories/symbolRepository.js';
 import { rankSemanticHits, rankSymbols } from '../services/ranking.js';
+import { isReusableCandidate } from '../services/recommendationService.js';
 
 export const searchSymbolsInput = z.object({
     query: z.string().min(1),
@@ -14,6 +15,26 @@ export const searchSymbolsInput = z.object({
 });
 const SCORE_THRESHOLD_FOR_FINAL = 0.45; // 综合排序分阈值（语义相似度占50%权重，原始0.5相似度 ≈ 综合0.35起）
 const TOP_K_FOR_FINAL_RESULTS = 20; // 结果上限,返回相似度高的，保证数据质量
+
+function toRankedResult(item: ReturnType<typeof rankSymbols>[number]) {
+    return {
+        id: item.symbol.id,
+        name: item.symbol.name,
+        type: item.symbol.type,
+        path: item.symbol.path,
+        description: item.symbol.description,
+        usageCount: item.symbol.usageCount,
+        score: item.score,
+        reason: item.reason.summary,
+        reasonDetail: item.reason,
+    };
+}
+
+function filterReusableSymbols<
+    T extends { symbol: { path: string; name: string } },
+>(items: T[]): T[] {
+    return items.filter((item) => isReusableCandidate(item.symbol as any));
+}
 
 export function createSearchSymbolsTool(repository: SymbolRepository) {
     return {
@@ -34,11 +55,43 @@ export function createSearchSymbolsTool(repository: SymbolRepository) {
                     type: input.type,
                     limit: input.limit,
                 });
+                const reusableHits = filterReusableSymbols(hits);
+
+                if (reusableHits.length === 0) {
+                    const keywordRows = (
+                        await repository.search(input.query, input.type)
+                    ).filter((row) => isReusableCandidate(row));
+                    const fallbackRows = input.ranked
+                        ? rankSymbols(input.query, keywordRows)
+                              .map(toRankedResult)
+                              .filter(
+                                  (x) => x.score >= SCORE_THRESHOLD_FOR_FINAL
+                              )
+                              .slice(0, TOP_K_FOR_FINAL_RESULTS)
+                        : keywordRows.map((r) => ({
+                              id: r.id,
+                              name: r.name,
+                              type: r.type,
+                              path: r.path,
+                              description: r.description,
+                              usageCount: r.usageCount,
+                          }));
+
+                    return {
+                        content: [
+                            {
+                                type: 'text' as const,
+                                text: JSON.stringify(fallbackRows, null, 2),
+                            },
+                        ],
+                    };
+                }
+
                 const simById = new Map(
-                    hits.map((h) => [h.symbol.id, h.similarity])
+                    reusableHits.map((h) => [h.symbol.id, h.similarity])
                 );
                 const resultRows = input.ranked
-                    ? rankSemanticHits(hits)
+                    ? rankSemanticHits(reusableHits, input.query)
                           .map((item) => ({
                               id: item.symbol.id,
                               name: item.symbol.name,
@@ -55,7 +108,7 @@ export function createSearchSymbolsTool(repository: SymbolRepository) {
                           }))
                           .filter((x) => x.score >= SCORE_THRESHOLD_FOR_FINAL) // 基于综合排序分过滤，保留 usage/recency 高的结果
                           .slice(0, TOP_K_FOR_FINAL_RESULTS)
-                    : hits.map((h) => ({
+                    : reusableHits.map((h) => ({
                           id: h.symbol.id,
                           name: h.symbol.name,
                           type: h.symbol.type,
@@ -64,46 +117,6 @@ export function createSearchSymbolsTool(repository: SymbolRepository) {
                           usageCount: h.symbol.usageCount,
                           semanticSimilarity: Number(h.similarity.toFixed(4)),
                       }));
-                // if (resultRows.length === 0) {
-                //     const keywordRows = await repository.search(
-                //         input.query,
-                //         input.type
-                //     );
-                //     const fallbackRows = input.ranked
-                //         ? rankSymbols(input.query, keywordRows)
-                //               .map((item) => ({
-                //                   id: item.symbol.id,
-                //                   name: item.symbol.name,
-                //                   type: item.symbol.type,
-                //                   path: item.symbol.path,
-                //                   description: item.symbol.description,
-                //                   usageCount: item.symbol.usageCount,
-                //                   score: item.score,
-                //                   reason: item.reason.summary,
-                //                   reasonDetail: item.reason,
-                //               }))
-                //               .filter(
-                //                   (x) => x.score >= SCORE_THRESHOLD_FOR_FINAL
-                //               )
-                //               .slice(0, TOP_K_FOR_FINAL_RESULTS)
-                //         : keywordRows.map((r) => ({
-                //               id: r.id,
-                //               name: r.name,
-                //               type: r.type,
-                //               path: r.path,
-                //               description: r.description,
-                //               usageCount: r.usageCount,
-                //           }));
-
-                //     return {
-                //         content: [
-                //             {
-                //                 type: 'text' as const,
-                //                 text: JSON.stringify(fallbackRows, null, 2),
-                //             },
-                //         ],
-                //     };
-                // }
                 return {
                     content: [
                         {
@@ -114,20 +127,12 @@ export function createSearchSymbolsTool(repository: SymbolRepository) {
                 };
             }
 
-            const rows = await repository.search(input.query, input.type);
+            const rows = (
+                await repository.search(input.query, input.type)
+            ).filter((row) => isReusableCandidate(row));
             const resultRows = input.ranked
                 ? rankSymbols(input.query, rows)
-                      .map((item) => ({
-                          id: item.symbol.id,
-                          name: item.symbol.name,
-                          type: item.symbol.type,
-                          path: item.symbol.path,
-                          description: item.symbol.description,
-                          usageCount: item.symbol.usageCount,
-                          score: item.score,
-                          reason: item.reason.summary,
-                          reasonDetail: item.reason,
-                      }))
+                      .map(toRankedResult)
                       .filter((x) => x.score >= SCORE_THRESHOLD_FOR_FINAL) // 基于综合排序分过滤
                       .slice(0, TOP_K_FOR_FINAL_RESULTS)
                 : rows.map((r) => ({

@@ -557,6 +557,7 @@ function createRowFromClass(
 ): IndexedSymbolRowOut {
     const relPath = getRelativePathForDisplay(projectRoot, filePath);
     const category = inferCategoryFromPath(filePath);
+    const jsdoc = parseJsDocInfo(_decl);
 
     // 大写开头的类视为组件
     const type: SymbolType = /^[A-Z]/.test(name) ? 'component' : 'function';
@@ -566,7 +567,7 @@ function createRowFromClass(
         type,
         category,
         path: relPath,
-        description: null,
+        description: jsdoc.description,
         // content meta.kind 暂时废弃不用，
         content: null,
         meta: {},

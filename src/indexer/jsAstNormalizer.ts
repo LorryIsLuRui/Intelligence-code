@@ -209,7 +209,11 @@ function traverseNode(node: t.Node, cb: (n: t.Node) => void) {
     }
 }
 export function inferBehaviorFromJS(node: t.Node): string[] {
-    const behavior: string[] = [];
+    const behavior = new Set<string>();
+
+    const add = (label: string) => {
+        behavior.add(label);
+    };
 
     // 遍历 AST
     traverseNode(node, (n) => {
@@ -218,11 +222,27 @@ export function inferBehaviorFromJS(node: t.Node): string[] {
             const name = n.callee.name.toLowerCase();
 
             if (name.includes('fetch') || name.includes('axios')) {
-                behavior.push('performs network request');
+                add('performs network request');
             }
 
             if (name.includes('settimeout')) {
-                behavior.push('uses timer');
+                add('uses timer');
+            }
+
+            if (name.includes('getscroll')) {
+                add('tracks scroll position');
+            }
+
+            if (name.includes('getoffset')) {
+                add('computes element offset');
+            }
+
+            if (name.includes('throttle')) {
+                add('throttles position updates');
+            }
+
+            if (name.includes('addeventlistener')) {
+                add('listens to viewport events');
             }
         }
 
@@ -236,8 +256,26 @@ export function inferBehaviorFromJS(node: t.Node): string[] {
                 prop === 'getBoundingClientRect' ||
                 prop === 'getComputedStyle'
             ) {
-                behavior.push('reads dom layout');
+                add('reads dom layout');
             }
+
+            if (prop === 'addEventListener') {
+                add('listens to viewport events');
+            }
+        }
+
+        if (t.isIdentifier(n)) {
+            const name = n.name.toLowerCase();
+            if (name === 'offsettop' || name === 'offsetbottom') {
+                add('supports offset positioning');
+            }
+            if (name === 'scrolltop') {
+                add('tracks scroll position');
+            }
+        }
+
+        if (t.isStringLiteral(n) && n.value.toLowerCase() === 'fixed') {
+            add('uses fixed positioning');
         }
 
         // localStorage
@@ -246,11 +284,11 @@ export function inferBehaviorFromJS(node: t.Node): string[] {
             t.isIdentifier(n.object) &&
             n.object.name === 'localStorage'
         ) {
-            behavior.push('uses local storage');
+            add('uses local storage');
         }
     });
 
-    return Array.from(new Set(behavior));
+    return [...behavior].sort();
 }
 export function extractNormalizedSignatureJS(node: t.Node): string {
     if (t.isFunctionDeclaration(node) || t.isFunctionExpression(node)) {
@@ -276,6 +314,7 @@ export function computeSemanticHashJs(
 
     const behavior = inferBehaviorFromJS(row.node);
     const meta = row.meta || {};
+
     const stable = {
         name: row.name,
         type: row.type,

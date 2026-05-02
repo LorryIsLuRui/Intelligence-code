@@ -131,10 +131,12 @@ const RANK_WEIGHTS = {
 } as const;
 
 /**
- * Phase 5：以向量余弦相似度作为主文本维度，再叠加 usage / recency / common（与 `rankSymbols` 同权重）。
+ * Phase 5：以向量余弦相似度作为主文本维度，再叠加 usage / recency / common 和 calleeNames 匹配度。
+ * calleeNames 作为结构信息独立信号，不污染纯语义向量。
  */
 export function rankSemanticHits(
-    hits: Array<{ symbol: CodeSymbol; similarity: number }>
+    hits: Array<{ symbol: CodeSymbol; similarity: number }>,
+    query?: string
 ): RankedSymbol[] {
     return hits
         .map(({ symbol, similarity }) => {
@@ -142,16 +144,32 @@ export function rankSemanticHits(
             const usage = usageScore(symbol.usageCount);
             const recency = recencyScore(symbol.createdAt);
             const common = commonPathScore(symbol.path);
+
+            // ✨ 新增：calleeNames 作为独立信号
+            let calleeMatchScore = 0;
+            if (query && Array.isArray(symbol.meta?.calleeNames)) {
+                const calleeNames = symbol.meta.calleeNames as string[];
+                const queryLower = query.toLowerCase();
+                const matchedCallees = calleeNames.filter((callee) =>
+                    queryLower.includes(callee.toLowerCase())
+                ).length;
+                if (matchedCallees > 0) {
+                    calleeMatchScore = Math.min(matchedCallees * 0.05, 0.2);
+                }
+            }
+
             const score =
                 textScore * RANK_WEIGHTS.textMatch +
                 usage * RANK_WEIGHTS.usage +
                 recency * RANK_WEIGHTS.recency +
-                common * RANK_WEIGHTS.commonPath;
+                common * RANK_WEIGHTS.commonPath +
+                calleeMatchScore;
             const reasonParts: string[] = [];
             if (textScore >= 0.55) reasonParts.push('语义相似度高');
             else if (textScore >= 0.4) reasonParts.push('语义相关');
             if (usage >= 0.6) reasonParts.push('使用频率高');
             if (common >= 1) reasonParts.push('位于 shared/common 路径');
+            if (calleeMatchScore > 0) reasonParts.push('函数调用关系匹配');
             if (reasonParts.length === 0) reasonParts.push('综合相关性较好');
             return {
                 symbol,

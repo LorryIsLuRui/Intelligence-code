@@ -148,4 +148,147 @@ describe('RecommendationService', () => {
         expect(result.recommended?.name).toBe('getOffsetTop');
         expect(result.recommended?.type).toBe('function');
     });
+
+    it('filters out mock and test-file components for reusable component queries', async () => {
+        const repository = {
+            searchSemanticHits: async () => [
+                {
+                    symbol: makeComponent({
+                        id: 20,
+                        name: 'MockFormItem',
+                        path: 'src/forms/linkage.test.js',
+                        description: 'Mock form item used in linkage tests',
+                        usageCount: 30,
+                    }),
+                    similarity: 0.95,
+                },
+                {
+                    symbol: makeComponent({
+                        id: 21,
+                        name: 'Affix',
+                        path: 'src/components/Affix.tsx',
+                        description:
+                            'Keep content fixed at a target position while scrolling',
+                        usageCount: 4,
+                        meta: {
+                            props: ['offsetTop', 'offsetBottom', 'target'],
+                            hooks: [],
+                            sideEffects: ['dom'],
+                            callers: [
+                                {
+                                    name: 'PageHeader',
+                                    path: 'src/pages/PageHeader.tsx',
+                                },
+                            ],
+                        },
+                    }),
+                    similarity: 0.72,
+                },
+            ],
+            search: async () => [],
+            searchByStructure: async () => [],
+        } as any;
+
+        const service = new RecommendationService(repository);
+        const result = await service.recommendComponent({
+            query: '帮我找一个affix组件，把内容固定在特定位置',
+            limit: 5,
+        });
+
+        expect(result.recommended?.name).toBe('Affix');
+        expect(result.alternatives.map((item) => item.name)).not.toContain(
+            'MockFormItem'
+        );
+    });
+
+    it('returns no recommendation when only low-relevance semantic matches remain', async () => {
+        const repository = {
+            searchSemanticHits: async () => [
+                {
+                    symbol: makeComponent({
+                        id: 30,
+                        name: 'PageLayout',
+                        path: 'src/components/PageLayout.tsx',
+                        description: 'Reusable page layout container',
+                        usageCount: 100,
+                    }),
+                    similarity: 0.48,
+                },
+            ],
+            search: async () => [],
+            searchByStructure: async () => [],
+        } as any;
+
+        const service = new RecommendationService(repository);
+        const result = await service.recommendComponent({
+            query: '帮我找一个affix组件，把内容固定在特定位置',
+            limit: 5,
+        });
+
+        expect(result.recommended).toBeNull();
+        expect(result.alternatives).toEqual([]);
+    });
+
+    it('keeps explicit name hit candidates for semantic queries', async () => {
+        const repository = {
+            searchSemanticHits: async () => [
+                {
+                    symbol: makeComponent({
+                        id: 40,
+                        name: 'Affix',
+                        path: 'formUtils/one-ui/Components/Affix/Affix.jsx',
+                        description: 'Affix 固钉组件 将页面元素钉在可视范围',
+                        usageCount: 0,
+                    }),
+                    similarity: 0.32,
+                },
+            ],
+            search: async () => [],
+            searchByStructure: async () => [],
+        } as any;
+
+        const service = new RecommendationService(repository);
+        const result = await service.recommendComponent({
+            query: '帮我找一个affix组件，把内容固定在特定位置',
+            limit: 5,
+        });
+
+        expect(result.recommended?.name).toBe('Affix');
+    });
+
+    it('prioritizes explicit Affix hit over high-usage demo candidates', async () => {
+        const repository = {
+            searchSemanticHits: async () => [
+                {
+                    symbol: makeComponent({
+                        id: 148,
+                        name: 'Affix',
+                        path: 'formUtils/one-ui/Components/Affix/Affix.jsx',
+                        description: 'Affix 固钉组件 将页面元素钉在可视范围',
+                        usageCount: 0,
+                    }),
+                    similarity: 0.2887,
+                },
+                {
+                    symbol: makeComponent({
+                        id: 165,
+                        name: 'formReducer',
+                        path: 'formUtils/one-ui/one-ui-demo/src/pages/ComplexForm.jsx',
+                        usageCount: 120,
+                    }),
+                    similarity: 0.2003,
+                },
+            ],
+            search: async () => [],
+            searchByStructure: async () => [],
+        } as any;
+
+        const service = new RecommendationService(repository);
+        const result = await service.recommendComponent({
+            query: '帮我找一个affix组件，把内容固定在特定位置',
+            limit: 5,
+        });
+
+        expect(result.recommended?.id).toBe(148);
+    });
 });

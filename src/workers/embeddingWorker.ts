@@ -113,7 +113,6 @@ async function processEmbedJob(
     console.error(
         `[worker] 🔄 embedding  [${ts()}]  table=${table}  hash=${shortHash}…  ${row.path}:${row.name}`
     );
-    // 与 reindex 保持一致：优先用 content（语义模板），降级用 indexedRowToEmbedText
     const doc = row.content ?? indexedRowToEmbedText(rowObj);
     const vectors = await embedClient.embed([doc]);
     vector = vectors[0];

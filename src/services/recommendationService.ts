@@ -153,6 +153,206 @@ function mergeCandidates(symbols: CodeSymbol[]): CodeSymbol[] {
     return merged;
 }
 
+const NON_REUSABLE_PATH_SEGMENTS = [
+    '__tests__',
+    '__mocks__',
+    '/test/',
+    '/tests/',
+    '/fixtures/',
+    '/stories/',
+    '/story/',
+];
+
+const DEMO_LIKE_PATH_SEGMENTS_STRICT = [
+    '/one-ui-demo/',
+    '/example/',
+    '/examples/',
+    '/demo/',
+    '/demos/',
+];
+
+const DEMO_LIKE_PATH_SEGMENTS_SOFT = [
+    '/one-ui-demo/',
+    '/example/',
+    '/examples/',
+];
+
+const NON_REUSABLE_PATH_PATTERNS = [
+    '.test.',
+    '.spec.',
+    '.stories.',
+    '.story.',
+    '.mock.',
+];
+
+const NON_REUSABLE_NAME_TOKENS = ['mock', 'fixture', 'example', 'demo'];
+
+const MIN_RECOMMENDATION_SCORE = {
+    semantic: 0.5,
+    keyword: 0.45,
+} as const;
+
+const MIN_SEMANTIC_TEXT_SCORE = 0.6;
+const MIN_LITERAL_MATCH_SCORE = 0.18;
+
+function isDemoLikePath(path: string, strict = false): boolean {
+    const normalizedPath = path.toLowerCase();
+    const segments = strict
+        ? DEMO_LIKE_PATH_SEGMENTS_STRICT
+        : DEMO_LIKE_PATH_SEGMENTS_SOFT;
+    return segments.some((segment) => normalizedPath.includes(segment));
+}
+
+/**
+ * 判断是否为可复用候选，过滤掉明显的测试/示例代码。虽然有可能误伤一些真实组件，但优先保证推荐结果的实用性和专业度。
+ * @param symbol 要判断的代码符号
+ * @returns boolean 是否为可复用候选
+ */
+export function isReusableCandidate(symbol: CodeSymbol): boolean {
+    const path = symbol.path.toLowerCase();
+    const name = symbol.name.toLowerCase();
+
+    if (
+        isDemoLikePath(path, true) ||
+        NON_REUSABLE_PATH_SEGMENTS.some((segment) => path.includes(segment)) ||
+        NON_REUSABLE_PATH_PATTERNS.some((pattern) => path.includes(pattern))
+    ) {
+        return false;
+    }
+
+    return !NON_REUSABLE_NAME_TOKENS.some(
+        (token) => name === token || name.startsWith(token)
+    );
+}
+
+/**
+ * 判断推荐结果的props/hooks等结构字段是否满足查询要求，作为强相关推荐的加分项之一。虽然有可能遗漏一些未正确标注字段的结果，但优先保证推荐结果的相关性和准确性。
+ * @param symbol 要判断的代码符号
+ * @param requiredProps 必需的属性列表
+ * @param requiredHooks 必需的钩子列表
+ * @returns boolean 是否为强相关推荐结果
+ */
+function hasAllRequiredFields(
+    symbol: CodeSymbol,
+    requiredProps: string[],
+    requiredHooks: string[]
+): boolean {
+    if (requiredProps.length === 0 && requiredHooks.length === 0) {
+        return false;
+    }
+
+    const props = getMetaStrings(symbol, 'props').map(normalizeToken);
+    const hooks = getMetaStrings(symbol, 'hooks').map(normalizeToken);
+
+    return (
+        requiredProps.every((field) => props.includes(normalizeToken(field))) &&
+        requiredHooks.every((field) => hooks.includes(normalizeToken(field)))
+    );
+}
+
+function extractLiteralTokens(query: string): string[] {
+    const tokens = new Set<string>();
+    const genericTokens = new Set([
+        'component',
+        'components',
+        'hook',
+        'hooks',
+        'util',
+        'utils',
+        'function',
+        'functions',
+        'class',
+        'classes',
+        'type',
+        'types',
+    ]);
+    const normalized = query.trim().toLowerCase();
+    for (const match of normalized.matchAll(/[a-z0-9_]+/g)) {
+        const token = match[0];
+        if (token.length >= 3 && !genericTokens.has(token)) {
+            tokens.add(token);
+        }
+    }
+    return [...tokens];
+}
+
+// eg: query='useDebounceInput组件', symbol.name='useDebounceInput' => match; query='防抖组件', symbol.name='useDebounceInput' => match; query='input组件', symbol.name='useDebounceInput' => weak match
+function hasStrongLiteralMatch(query: string, symbol: CodeSymbol): boolean {
+    const normalizedQuery = query.trim().toLowerCase();
+    const name = symbol.name.toLowerCase();
+    const path = symbol.path.toLowerCase();
+    const basename = path.split('/').pop() ?? '';
+
+    if (
+        normalizedQuery &&
+        (name === normalizedQuery || path.includes(normalizedQuery))
+    ) {
+        return true;
+    }
+
+    const tokens = extractLiteralTokens(query);
+    return tokens.some(
+        (token) =>
+            name === token || name.includes(token) || basename.includes(token)
+    );
+}
+
+function isStrongEnoughRecommendation(
+    item: ReturnType<typeof rankSemanticHits>[number],
+    query: string,
+    queriedBy: 'semantic' | 'keyword',
+    requiredProps: string[],
+    requiredHooks: string[]
+): boolean {
+    const hasRequiredFieldMatch = hasAllRequiredFields(
+        item.symbol,
+        requiredProps,
+        requiredHooks
+    );
+    const hasLiteralMatch = hasStrongLiteralMatch(query, item.symbol);
+
+    if (queriedBy === 'semantic') {
+        return (
+            (item.score >= MIN_RECOMMENDATION_SCORE.semantic &&
+                (item.reason.textMatch.score >= MIN_SEMANTIC_TEXT_SCORE ||
+                    hasRequiredFieldMatch)) ||
+            (hasLiteralMatch && item.score >= MIN_LITERAL_MATCH_SCORE)
+        );
+    }
+
+    return (
+        item.score >= MIN_RECOMMENDATION_SCORE.keyword ||
+        (hasRequiredFieldMatch && item.score >= 0.4)
+    );
+}
+
+function computeRecommendationPriority(
+    item: ReturnType<typeof rankSemanticHits>[number],
+    query: string
+): { score: number; reason: string } {
+    let score = item.score;
+    const notes: string[] = [];
+    const path = item.symbol.path.toLowerCase();
+
+    if (hasStrongLiteralMatch(query, item.symbol)) {
+        score += 0.22;
+        notes.push('名称或文件名命中查询');
+    }
+
+    if (isDemoLikePath(path)) {
+        score -= 0.18;
+        notes.push('示例工程路径降权');
+    }
+
+    return {
+        score: Number(Math.max(0, score).toFixed(3)),
+        reason:
+            notes.length > 0
+                ? `${item.reason.summary} + ${notes.join(' + ')}`
+                : item.reason.summary,
+    };
+}
+
 export class RecommendationService {
     constructor(private readonly repository: SymbolRepository) {}
 
@@ -306,6 +506,18 @@ export class RecommendationService {
             );
             combined = mergedBeforeCategory;
         }
+
+        const reusableCandidates = combined.filter(isReusableCandidate);
+        if (reusableCandidates.length > 0) {
+            console.error(
+                '[code-intelligence-mcp] recommendComponent.reusableFilter before=%s after=%s removed=%s',
+                String(combined.length),
+                String(reusableCandidates.length),
+                String(combined.length - reusableCandidates.length)
+            );
+            combined = reusableCandidates;
+        }
+
         console.error(
             '[code-intelligence-mcp] recommendComponent.combine merged=%s afterCategory=%s top=%s',
             String(mergedBeforeCategory.length),
@@ -349,15 +561,46 @@ export class RecommendationService {
                               searchResults.find(
                                   (item) => item.symbol.id === symbol.id
                               )?.similarity ?? 0.55,
-                      }))
+                      })),
+                      input.query
                   )
                 : rankSymbols(input.query, combined);
 
-        const candidates = ranked.map((item) =>
+        const qualifiedRanked = ranked.filter((item) =>
+            isStrongEnoughRecommendation(
+                item,
+                input.query,
+                queriedBy,
+                requiredProps,
+                requiredHooks
+            )
+        );
+        console.error(
+            '[code-intelligence-mcp] recommendComponent.qualityGate before=%s after=%s queriedBy=%s',
+            String(ranked.length),
+            String(qualifiedRanked.length),
+            queriedBy
+        );
+
+        const prioritizedRanked = qualifiedRanked
+            .map((item) => {
+                const adjusted = computeRecommendationPriority(
+                    item,
+                    input.query
+                );
+                return {
+                    item,
+                    adjustedScore: adjusted.score,
+                    adjustedReason: adjusted.reason,
+                };
+            })
+            .sort((a, b) => b.adjustedScore - a.adjustedScore);
+
+        const candidates = prioritizedRanked.map((entry) =>
             toCandidate(
-                item.symbol,
-                item.score,
-                item.reason.summary,
+                entry.item.symbol,
+                entry.adjustedScore,
+                entry.adjustedReason,
                 requiredProps,
                 requiredHooks
             )
