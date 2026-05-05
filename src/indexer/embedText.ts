@@ -1,7 +1,7 @@
 // 仅js类型使用，后续会删掉
 
+import { EMBED_MAX_CONTENT_LENGTH } from '../config/tuning.js';
 import type { IndexedSymbolRow } from './indexProject.js';
-const MAX_CONTENT_LENGTH = 1200;
 
 function briefMeta(meta: Record<string, unknown>): string {
     const keys = ['props', 'params', 'properties', 'hooks'] as const;
@@ -27,7 +27,7 @@ export function indexedRowToEmbedText(row: IndexedSymbolRow): string {
         row.path,
         row.description ?? '',
         metaBit,
-        (row.content ?? '').slice(0, MAX_CONTENT_LENGTH),
+        (row.content ?? '').slice(0, EMBED_MAX_CONTENT_LENGTH),
     ]
         .filter((s) => s.length > 0)
         .join('\n');

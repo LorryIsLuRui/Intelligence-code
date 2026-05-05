@@ -8,6 +8,7 @@ import { createSearchByStructureTool } from '../tools/searchByStructure.js';
 import { createIncUsageTool } from '../tools/incUsage.js';
 import { RecommendationService } from '../services/recommendationService.js';
 import { createRecommendComponentTool } from '../tools/recommendComponent.js';
+import { createQueryDocsTool } from '../tools/queryDocs.js';
 
 export function createServer() {
     console.error('[code-intelligence-mcp] createServer.init');
@@ -105,8 +106,20 @@ export function createServer() {
         '[code-intelligence-mcp] prompt.registered reusable-code-advisor'
     );
 
+    const queryDocsTool = createQueryDocsTool();
+    server.tool(
+        queryDocsTool.name,
+        queryDocsTool.description,
+        queryDocsTool.inputSchema,
+        queryDocsTool.handler
+    );
     console.error(
-        '[code-intelligence-mcp] createServer.ready toolCount=6 promptCount=1'
+        '[code-intelligence-mcp] tool.registered %s',
+        queryDocsTool.name
+    );
+
+    console.error(
+        '[code-intelligence-mcp] createServer.ready toolCount=7 promptCount=1'
     );
 
     return server;

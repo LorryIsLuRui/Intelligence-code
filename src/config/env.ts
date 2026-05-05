@@ -66,6 +66,15 @@ export const env = {
     get symbolsTable() {
         return process.env.SYMBOLS_TABLE ?? 'symbols';
     },
+    /**
+     * 文档 chunks 表名。
+     * 默认跟随 SYMBOLS_TABLE 派生，例如：symbols -> symbols_chunks，repo_a_symbols -> repo_a_symbols_chunks。
+     * 如需显式覆盖，仍可单独传入 CHUNKS_TABLE。
+     */
+    get chunksTable() {
+        const symbolsTable = process.env.SYMBOLS_TABLE ?? 'symbols';
+        return process.env.CHUNKS_TABLE ?? `${symbolsTable}_chunks`;
+    },
     /** Python FastAPI 嵌入服务根 URL，如 http://127.0.0.1:8765 */
     get embeddingServiceUrl() {
         return (process.env.EMBEDDING_SERVICE_URL ?? '').trim();

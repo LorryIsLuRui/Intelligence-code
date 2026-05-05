@@ -53,3 +53,43 @@ export function getAllTableSQLs(): string[] {
         ...getSymbolsIndexSQLs(),
     ];
 }
+
+export function getChunksTableSQL(): string {
+    const tableName = env.chunksTable;
+    return `CREATE TABLE IF NOT EXISTS ${tableName} (
+  id            SERIAL PRIMARY KEY,
+  source_id     VARCHAR(255),
+  title         TEXT NOT NULL,
+  path          TEXT NOT NULL,
+  chunk_index   INT NOT NULL,
+  chunk_count   INT NOT NULL,
+  content       TEXT NOT NULL,
+  summary       TEXT,
+  category      VARCHAR(255),
+  meta          JSONB,
+  embedding     vector(384),
+  semantic_hash VARCHAR(64) NOT NULL,
+  status        SMALLINT NOT NULL DEFAULT ${DEFAULT_STATUS_ON_UPSERT},
+  created_at    TIMESTAMP NOT NULL DEFAULT NOW(),
+  updated_at    TIMESTAMP NOT NULL DEFAULT NOW(),
+  CONSTRAINT uk_${tableName}_path_chunk UNIQUE (path, chunk_index)
+)`;
+}
+
+export function getChunksIndexSQLs(): string[] {
+    const t = env.chunksTable;
+    return [
+        `CREATE INDEX IF NOT EXISTS idx_${t}_source_id ON ${t}(source_id)`,
+        `CREATE INDEX IF NOT EXISTS idx_${t}_semantic_hash ON ${t}(semantic_hash)`,
+        `CREATE INDEX IF NOT EXISTS idx_${t}_status ON ${t}(status)`,
+        `CREATE INDEX IF NOT EXISTS idx_${t}_path ON ${t}(path)`,
+    ];
+}
+
+export function getAllChunkTableSQLs(): string[] {
+    return [
+        getEnsureExtensionSQL(),
+        getChunksTableSQL(),
+        ...getChunksIndexSQLs(),
+    ];
+}
