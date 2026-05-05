@@ -1,5 +1,21 @@
 // rank 策略，用于排序搜索结果，排序依据为：文本匹配度、使用频率、最近更新时间、是否在 common 目录下
 import type { CodeSymbol } from '../types/symbol.js';
+import {
+    CALLEE_MATCH_SCORE_MAX,
+    CALLEE_MATCH_SCORE_PER_MATCH,
+    COMMON_PATH_SCORE_NO,
+    COMMON_PATH_SCORE_YES,
+    RANK_WEIGHTS,
+    RECENCY_SCORE_DEFAULT,
+    RECENCY_SCORE_OLDEST,
+    RECENCY_SCORE_TIERS,
+    SEMANTIC_REASON_THRESHOLD_HIGH,
+    SEMANTIC_REASON_THRESHOLD_MED,
+    TEXT_MATCH_SCORES,
+    TOKEN_OVERLAP_TIERS,
+    USAGE_REASON_THRESHOLD_HIGH,
+    USAGE_SCORE_LOG_DIVISOR,
+} from '../config/tuning.js';
 
 export interface RankingReason {
     textMatch: {
@@ -70,9 +86,11 @@ function tokenOverlapScore(query: string, symbol: CodeSymbol): number {
     const matched = queryTokens.filter((token) => text.includes(token)).length;
     const overlapRatio = matched / queryTokens.length;
 
-    if (matched >= 4 && overlapRatio >= 0.45) return 0.78;
-    if (matched >= 3 && overlapRatio >= 0.3) return 0.68;
-    if (matched >= 2 && overlapRatio >= 0.18) return 0.56;
+    for (const tier of TOKEN_OVERLAP_TIERS) {
+        if (matched >= tier.minMatches && overlapRatio >= tier.minRatio) {
+            return tier.score;
+        }
+    }
     return 0;
 }
 
@@ -85,30 +103,36 @@ function textMatchScore(
     const name = symbol.name.toLowerCase();
     const description = (symbol.description ?? '').toLowerCase();
     if (name === q) return { score: 1, matchedBy: 'exact_name' };
-    if (name.includes(q)) return { score: 0.85, matchedBy: 'name_contains' };
+    if (name.includes(q))
+        return {
+            score: TEXT_MATCH_SCORES.nameContains,
+            matchedBy: 'name_contains',
+        };
     if (description.includes(q))
-        return { score: 0.65, matchedBy: 'description_contains' };
+        return {
+            score: TEXT_MATCH_SCORES.descriptionContains,
+            matchedBy: 'description_contains',
+        };
     const overlapScore = tokenOverlapScore(query, symbol);
     if (overlapScore > 0)
         return { score: overlapScore, matchedBy: 'token_overlap' };
-    return { score: 0.2, matchedBy: 'weak' };
+    return { score: TEXT_MATCH_SCORES.weak, matchedBy: 'weak' };
 }
 
 function usageScore(usageCount: number): number {
     // log scale to avoid very large usage monopolizing ranking.
-    return clamp01(Math.log10(usageCount + 1) / 3);
+    return clamp01(Math.log10(usageCount + 1) / USAGE_SCORE_LOG_DIVISOR);
 }
 
 function recencyScore(createdAt?: string | null): number {
-    if (!createdAt) return 0.4;
+    if (!createdAt) return RECENCY_SCORE_DEFAULT;
     const ts = new Date(createdAt).getTime();
-    if (Number.isNaN(ts)) return 0.4;
+    if (Number.isNaN(ts)) return RECENCY_SCORE_DEFAULT;
     const days = (Date.now() - ts) / (1000 * 60 * 60 * 24);
-    if (days <= 7) return 1;
-    if (days <= 30) return 0.8;
-    if (days <= 90) return 0.6;
-    if (days <= 180) return 0.4;
-    return 0.25;
+    for (const tier of RECENCY_SCORE_TIERS) {
+        if (days <= tier.maxDays) return tier.score;
+    }
+    return RECENCY_SCORE_OLDEST;
 }
 
 function daysSinceCreated(createdAt?: string | null): number | null {
@@ -120,15 +144,10 @@ function daysSinceCreated(createdAt?: string | null): number | null {
 
 function commonPathScore(path: string): number {
     const lower = path.toLowerCase();
-    return lower.includes('/common/') || lower.includes('/shared/') ? 1 : 0.35;
+    return lower.includes('/common/') || lower.includes('/shared/')
+        ? COMMON_PATH_SCORE_YES
+        : COMMON_PATH_SCORE_NO;
 }
-
-const RANK_WEIGHTS = {
-    textMatch: 0.5,
-    usage: 0.3,
-    recency: 0.1,
-    commonPath: 0.1,
-} as const;
 
 /**
  * Phase 5：以向量余弦相似度作为主文本维度，再叠加 usage / recency / common 和 calleeNames 匹配度。
@@ -154,7 +173,10 @@ export function rankSemanticHits(
                     queryLower.includes(callee.toLowerCase())
                 ).length;
                 if (matchedCallees > 0) {
-                    calleeMatchScore = Math.min(matchedCallees * 0.05, 0.2);
+                    calleeMatchScore = Math.min(
+                        matchedCallees * CALLEE_MATCH_SCORE_PER_MATCH,
+                        CALLEE_MATCH_SCORE_MAX
+                    );
                 }
             }
 
@@ -165,10 +187,14 @@ export function rankSemanticHits(
                 common * RANK_WEIGHTS.commonPath +
                 calleeMatchScore;
             const reasonParts: string[] = [];
-            if (textScore >= 0.55) reasonParts.push('语义相似度高');
-            else if (textScore >= 0.4) reasonParts.push('语义相关');
-            if (usage >= 0.6) reasonParts.push('使用频率高');
-            if (common >= 1) reasonParts.push('位于 shared/common 路径');
+            if (textScore >= SEMANTIC_REASON_THRESHOLD_HIGH)
+                reasonParts.push('语义相似度高');
+            else if (textScore >= SEMANTIC_REASON_THRESHOLD_MED)
+                reasonParts.push('语义相关');
+            if (usage >= USAGE_REASON_THRESHOLD_HIGH)
+                reasonParts.push('使用频率高');
+            if (common >= COMMON_PATH_SCORE_YES)
+                reasonParts.push('位于 shared/common 路径');
             if (calleeMatchScore > 0) reasonParts.push('函数调用关系匹配');
             if (reasonParts.length === 0) reasonParts.push('综合相关性较好');
             return {
@@ -189,7 +215,7 @@ export function rankSemanticHits(
                     },
                     commonPath: {
                         score: Number(common.toFixed(3)),
-                        isCommonPath: common >= 1,
+                        isCommonPath: common >= COMMON_PATH_SCORE_YES,
                     },
                     weights: RANK_WEIGHTS,
                     summary: reasonParts.join(' + '),
@@ -215,12 +241,16 @@ export function rankSymbols(
                 recency * RANK_WEIGHTS.recency +
                 common * RANK_WEIGHTS.commonPath;
             const reasonParts: string[] = [];
-            if (text.score >= 0.85) reasonParts.push('文本匹配度高');
-            else if (text.score >= 0.65) reasonParts.push('描述命中');
+            if (text.score >= TEXT_MATCH_SCORES.nameContains)
+                reasonParts.push('文本匹配度高');
+            else if (text.score >= TEXT_MATCH_SCORES.descriptionContains)
+                reasonParts.push('描述命中');
             else if (text.matchedBy === 'token_overlap')
                 reasonParts.push('关键词片段高度重合');
-            if (usage >= 0.6) reasonParts.push('使用频率高');
-            if (common >= 1) reasonParts.push('位于 shared/common 路径');
+            if (usage >= USAGE_REASON_THRESHOLD_HIGH)
+                reasonParts.push('使用频率高');
+            if (common >= COMMON_PATH_SCORE_YES)
+                reasonParts.push('位于 shared/common 路径');
             if (reasonParts.length === 0) reasonParts.push('综合相关性较好');
             return {
                 symbol,
@@ -240,7 +270,7 @@ export function rankSymbols(
                     },
                     commonPath: {
                         score: Number(common.toFixed(3)),
-                        isCommonPath: common >= 1,
+                        isCommonPath: common >= COMMON_PATH_SCORE_YES,
                     },
                     weights: RANK_WEIGHTS,
                     summary: reasonParts.join(' + '),

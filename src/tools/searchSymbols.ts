@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { SymbolRepository } from '../repositories/symbolRepository.js';
 import { rankSemanticHits, rankSymbols } from '../services/ranking.js';
 import { isReusableCandidate } from '../services/recommendationService.js';
+import { SEARCH_SCORE_THRESHOLD, SEARCH_TOP_K } from '../config/tuning.js';
 
 export const searchSymbolsInput = z.object({
     query: z.string().min(1),
@@ -13,8 +14,8 @@ export const searchSymbolsInput = z.object({
     semantic: z.boolean().optional().default(false),
     limit: z.number().int().min(1).max(100).optional().default(20),
 });
-const SCORE_THRESHOLD_FOR_FINAL = 0.45; // 综合排序分阈值（语义相似度占50%权重，原始0.5相似度 ≈ 综合0.35起）
-const TOP_K_FOR_FINAL_RESULTS = 20; // 结果上限,返回相似度高的，保证数据质量
+const SCORE_THRESHOLD_FOR_FINAL = SEARCH_SCORE_THRESHOLD; // 综合排序分阈値（语义相似度占50%权重，原始0.5相似度≈综合60.35起）
+const TOP_K_FOR_FINAL_RESULTS = SEARCH_TOP_K; // 结果上限,返回相似度高的，保证数据质量
 
 function toRankedResult(item: ReturnType<typeof rankSymbols>[number]) {
     return {

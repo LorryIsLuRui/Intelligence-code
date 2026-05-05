@@ -1,6 +1,14 @@
 import type { SymbolRepository } from '../repositories/symbolRepository.js';
 import { rankSemanticHits, rankSymbols } from './ranking.js';
 import type { CodeSymbol, SymbolType } from '../types/symbol.js';
+import {
+    DEMO_PATH_PRIORITY_PENALTY,
+    LITERAL_MATCH_PRIORITY_BOOST,
+    MIN_LITERAL_MATCH_SCORE,
+    MIN_RECOMMENDATION_SCORE,
+    MIN_SEMANTIC_TEXT_MATCH_SCORE,
+    REQUIRED_FIELD_FALLBACK_MIN_SCORE,
+} from '../config/tuning.js';
 
 export interface RecommendComponentInput {
     query: string;
@@ -187,14 +195,6 @@ const NON_REUSABLE_PATH_PATTERNS = [
 
 const NON_REUSABLE_NAME_TOKENS = ['mock', 'fixture', 'example', 'demo'];
 
-const MIN_RECOMMENDATION_SCORE = {
-    semantic: 0.5,
-    keyword: 0.45,
-} as const;
-
-const MIN_SEMANTIC_TEXT_SCORE = 0.6;
-const MIN_LITERAL_MATCH_SCORE = 0.18;
-
 function isDemoLikePath(path: string, strict = false): boolean {
     const normalizedPath = path.toLowerCase();
     const segments = strict
@@ -314,7 +314,7 @@ function isStrongEnoughRecommendation(
     if (queriedBy === 'semantic') {
         return (
             (item.score >= MIN_RECOMMENDATION_SCORE.semantic &&
-                (item.reason.textMatch.score >= MIN_SEMANTIC_TEXT_SCORE ||
+                (item.reason.textMatch.score >= MIN_SEMANTIC_TEXT_MATCH_SCORE ||
                     hasRequiredFieldMatch)) ||
             (hasLiteralMatch && item.score >= MIN_LITERAL_MATCH_SCORE)
         );
@@ -322,7 +322,8 @@ function isStrongEnoughRecommendation(
 
     return (
         item.score >= MIN_RECOMMENDATION_SCORE.keyword ||
-        (hasRequiredFieldMatch && item.score >= 0.4)
+        (hasRequiredFieldMatch &&
+            item.score >= REQUIRED_FIELD_FALLBACK_MIN_SCORE)
     );
 }
 
@@ -335,12 +336,12 @@ function computeRecommendationPriority(
     const path = item.symbol.path.toLowerCase();
 
     if (hasStrongLiteralMatch(query, item.symbol)) {
-        score += 0.22;
+        score += LITERAL_MATCH_PRIORITY_BOOST;
         notes.push('名称或文件名命中查询');
     }
 
     if (isDemoLikePath(path)) {
-        score -= 0.18;
+        score -= DEMO_PATH_PRIORITY_PENALTY;
         notes.push('示例工程路径降权');
     }
 

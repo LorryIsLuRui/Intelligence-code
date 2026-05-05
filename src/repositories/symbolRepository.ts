@@ -1,6 +1,7 @@
 import pg from 'pg';
 import { env } from '../config/env.js';
 import { getPool } from '../db/postgres.js';
+import { SYMBOL_SIMILARITY_THRESHOLD, SYMBOL_TOP_K } from '../config/tuning.js';
 import type { CodeSymbol, SymbolType } from '../types/symbol.js';
 import { createEmbeddingClient } from '../services/embeddingClient.js';
 import { SEARCHABLE_STATUS } from '../config/symbolStatus.js';
@@ -19,8 +20,6 @@ interface SymbolRow {
     embedding?: string | null; // pgvector 返回字符串 "[x1,x2,...]"
     similarity?: string; // searchSemanticHits 时附加
 }
-const SIMILARITY_THRESHOLD = 0;
-const TOP_K = 20;
 
 const inMemorySymbols: CodeSymbol[] = [
     {
@@ -261,8 +260,8 @@ export class SymbolRepository {
             query,
             opts?.type ?? '',
             env.symbolsTable,
-            String(opts?.limit ?? TOP_K),
-            String(SIMILARITY_THRESHOLD),
+            String(opts?.limit ?? SYMBOL_TOP_K),
+            String(SYMBOL_SIMILARITY_THRESHOLD),
             String(SEARCHABLE_STATUS),
             String(Boolean(this.pool))
         );
@@ -282,7 +281,7 @@ export class SymbolRepository {
             return [];
         }
 
-        const limit = opts?.limit ?? TOP_K;
+        const limit = opts?.limit ?? SYMBOL_TOP_K;
         const client = createEmbeddingClient(env.embeddingServiceUrl);
         const [queryVec] = await client.embed([query.trim()]);
         if (!queryVec?.length) {
@@ -319,7 +318,7 @@ export class SymbolRepository {
             similarity: Number(r.similarity),
         }));
         const passed = mapped.filter(
-            (x) => x.similarity >= SIMILARITY_THRESHOLD
+            (x) => x.similarity >= SYMBOL_SIMILARITY_THRESHOLD
         );
 
         console.error(
