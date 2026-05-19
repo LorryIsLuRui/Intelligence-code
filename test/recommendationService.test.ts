@@ -43,9 +43,19 @@ function makeFunction(overrides: Partial<CodeSymbol> = {}): CodeSymbol {
     };
 }
 
+function createRepositoryMock(overrides: Record<string, unknown> = {}) {
+    return {
+        searchSemanticHits: async () => [],
+        search: async () => [],
+        searchByStructure: async () => [],
+        getByName: async () => null,
+        ...overrides,
+    } as any;
+}
+
 describe('RecommendationService', () => {
     it('returns the best matched component and alternatives', async () => {
-        const repository = {
+        const repository = createRepositoryMock({
             searchSemanticHits: async () => [
                 {
                     symbol: makeComponent({ id: 1, name: 'BaseInput' }),
@@ -60,7 +70,6 @@ describe('RecommendationService', () => {
                     similarity: 0.75,
                 },
             ],
-            search: async () => [],
             searchByStructure: async () => [
                 makeComponent({
                     id: 2,
@@ -72,7 +81,11 @@ describe('RecommendationService', () => {
                     },
                 }),
             ],
-        } as any;
+            getByName: async (name: string) =>
+                name === 'BaseInput'
+                    ? makeComponent({ id: 1, name: 'BaseInput' })
+                    : null,
+        });
 
         const service = new RecommendationService(repository);
         const result = await service.recommendComponent({
@@ -86,18 +99,20 @@ describe('RecommendationService', () => {
             'TextField'
         );
         expect(result.queriedBy).toBe('semantic');
+        expect(result.debug.attempts.length).toBeGreaterThanOrEqual(1);
+        expect(result.debug.selectedQuery).toBe('input component');
+        expect(result.debug.retryUsed).toBe(false);
     });
 
     it('falls back to keyword mode when semantic search fails', async () => {
-        const repository = {
+        const repository = createRepositoryMock({
             searchSemanticHits: async () => {
                 throw new Error('embedding unavailable');
             },
             search: async () => [
                 makeComponent({ id: 3, name: 'FallbackInput', usageCount: 4 }),
             ],
-            searchByStructure: async () => [],
-        } as any;
+        });
 
         const service = new RecommendationService(repository);
         const result = await service.recommendComponent({
@@ -107,12 +122,15 @@ describe('RecommendationService', () => {
 
         expect(result.queriedBy).toBe('keyword');
         expect(result.recommended?.name).toBe('FallbackInput');
+        expect(result.debug.fallbackReason).toBe(
+            'semantic_error_fallback_keyword'
+        );
     });
 
     it('uses function search for util queries', async () => {
         const semanticTypes: string[] = [];
         const structureTypes: string[] = [];
-        const repository = {
+        const repository = createRepositoryMock({
             searchSemanticHits: async (
                 _query: string,
                 opts?: { type?: string }
@@ -135,7 +153,7 @@ describe('RecommendationService', () => {
                 structureTypes.push(opts?.type ?? '');
                 return [];
             },
-        } as any;
+        });
 
         const service = new RecommendationService(repository);
         const result = await service.recommendComponent({
@@ -150,7 +168,7 @@ describe('RecommendationService', () => {
     });
 
     it('filters out mock and test-file components for reusable component queries', async () => {
-        const repository = {
+        const repository = createRepositoryMock({
             searchSemanticHits: async () => [
                 {
                     symbol: makeComponent({
@@ -185,9 +203,7 @@ describe('RecommendationService', () => {
                     similarity: 0.72,
                 },
             ],
-            search: async () => [],
-            searchByStructure: async () => [],
-        } as any;
+        });
 
         const service = new RecommendationService(repository);
         const result = await service.recommendComponent({
@@ -202,7 +218,7 @@ describe('RecommendationService', () => {
     });
 
     it('returns no recommendation when only low-relevance semantic matches remain', async () => {
-        const repository = {
+        const repository = createRepositoryMock({
             searchSemanticHits: async () => [
                 {
                     symbol: makeComponent({
@@ -215,9 +231,7 @@ describe('RecommendationService', () => {
                     similarity: 0.48,
                 },
             ],
-            search: async () => [],
-            searchByStructure: async () => [],
-        } as any;
+        });
 
         const service = new RecommendationService(repository);
         const result = await service.recommendComponent({
@@ -230,7 +244,7 @@ describe('RecommendationService', () => {
     });
 
     it('keeps explicit name hit candidates for semantic queries', async () => {
-        const repository = {
+        const repository = createRepositoryMock({
             searchSemanticHits: async () => [
                 {
                     symbol: makeComponent({
@@ -243,9 +257,7 @@ describe('RecommendationService', () => {
                     similarity: 0.32,
                 },
             ],
-            search: async () => [],
-            searchByStructure: async () => [],
-        } as any;
+        });
 
         const service = new RecommendationService(repository);
         const result = await service.recommendComponent({
@@ -257,7 +269,7 @@ describe('RecommendationService', () => {
     });
 
     it('prioritizes explicit Affix hit over high-usage demo candidates', async () => {
-        const repository = {
+        const repository = createRepositoryMock({
             searchSemanticHits: async () => [
                 {
                     symbol: makeComponent({
@@ -279,9 +291,7 @@ describe('RecommendationService', () => {
                     similarity: 0.2003,
                 },
             ],
-            search: async () => [],
-            searchByStructure: async () => [],
-        } as any;
+        });
 
         const service = new RecommendationService(repository);
         const result = await service.recommendComponent({
@@ -290,5 +300,34 @@ describe('RecommendationService', () => {
         });
 
         expect(result.recommended?.id).toBe(148);
+    });
+
+    it('retries with rewritten query when first attempt has no candidates', async () => {
+        const semanticQueries: string[] = [];
+        const repository = createRepositoryMock({
+            searchSemanticHits: async (query: string) => {
+                semanticQueries.push(query);
+                if (query.includes('帮我找')) {
+                    return [];
+                }
+                return [
+                    {
+                        symbol: makeComponent({ id: 60, name: 'Affix' }),
+                        similarity: 0.81,
+                    },
+                ];
+            },
+        });
+
+        const service = new RecommendationService(repository);
+        const result = await service.recommendComponent({
+            query: '帮我找一个 affix 组件',
+            limit: 5,
+        });
+
+        expect(semanticQueries.length).toBeGreaterThanOrEqual(2);
+        expect(result.recommended?.name).toBe('Affix');
+        expect(result.debug.retryUsed).toBe(true);
+        expect(result.debug.selectedQuery).not.toBeNull();
     });
 });

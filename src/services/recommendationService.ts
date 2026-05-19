@@ -1,4 +1,33 @@
 import type { SymbolRepository } from '../repositories/symbolRepository.js';
+/**
+ * ──────────────────────────────────────────────────────────────────────────────
+ * [Agent 闭环流程总览]
+ *
+ * recommendComponent (核心 agent 主循环)
+ *
+ * 1. 解析输入，生成 query 变体（query rewrite，多轮尝试）
+ * 2. 对每个 query 变体依次尝试：
+ *    2.1. 搜索候选（优先语义，异常时回退关键词）
+ *    2.2. 结构字段补充搜索（props/hooks）
+ *    2.3. 合并去重、按 category 过滤、过滤不可复用项
+ *    2.4. 排序、Top-K 详情补查（enrich）
+ *    2.5. 质量门控（quality gate，必须命中 requiredProps/hooks 或高分）
+ *    2.6. 优先级调整（如名称/路径命中加分、demo 路径降权）
+ *    2.7. 命中则立即返回推荐结果，记录 debug trace
+ *    2.8. 未命中则进入下一 query 变体（自动重试）
+ * 3. 所有变体均未命中则返回无结果，debug trace 记录所有尝试
+ *
+ * 关键特性：
+ * - query rewrite + retry（自动多轮尝试）
+ * - 结构/语义/关键词多路融合
+ * - Top-K 详情补查
+ * - 质量门控与优先级调整
+ * - 全流程 debug trace（可用于 agent 反思/可观测性）
+ *
+ * 总结：
+ * “实现了一个单 agent 闭环推荐系统，支持 query 自动重写与多轮重试，融合语义/结构/关键词多路检索，Top-K 详情补查，质量门控与优先级调整，并输出全流程 debug trace，便于 agent 反思和可观测性。”
+ * ──────────────────────────────────────────────────────────────────────────────
+ */
 import { rankSemanticHits, rankSymbols } from './ranking.js';
 import type { CodeSymbol, SymbolType } from '../types/symbol.js';
 import {
@@ -9,6 +38,41 @@ import {
     MIN_SEMANTIC_TEXT_MATCH_SCORE,
     REQUIRED_FIELD_FALLBACK_MIN_SCORE,
 } from '../config/tuning.js';
+
+/** 跳过原因标识 */
+const SKIPPED_REASON = {
+    NO_COMBINED: 'no_combined' as const,
+    NO_QUALIFIED: 'no_qualified' as const,
+};
+
+/** 查询方式标识 */
+const QUERIED_BY = {
+    SEMANTIC: 'semantic' as const,
+    KEYWORD: 'keyword' as const,
+};
+
+/** 回退原因标识 */
+const FALLBACK_REASON = {
+    SEMANTIC_ERROR: 'semantic_error_fallback_keyword' as const,
+};
+
+/** 推荐结果文案 */
+const RECOMMENDATION_MESSAGE = {
+    FOUND: '已找到可复用组件候选，首选已按综合匹配度排序。',
+    NOT_FOUND: '未找到符合条件的可复用组件。',
+};
+
+/** 详情补查的 top-k 条数 */
+const ENRICH_TOP_K = 3;
+/** 最多取查询变体数量 */
+const MAX_QUERY_VARIANTS = 2;
+/** 结构/语义搜索 limit 倍数 */
+const STRUCTURE_LIMIT_MULTIPLIER = 4;
+/** 结构/语义搜索 limit 最小值 */
+const STRUCTURE_LIMIT_MIN = 12;
+/** 关键词搜索命中时的默认相似度补值 */
+const DEFAULT_KEYWORD_SIMILARITY = 0.55;
+// ──────────────────────────────────────────────────────────────────────────────
 
 export interface RecommendComponentInput {
     query: string;
@@ -44,10 +108,58 @@ export interface RecommendComponentResult {
         requiredHooks: string[];
     };
     message: string;
+    debug: RecommendationDebug;
+}
+
+export interface RecommendationAttempt {
+    query: string;
+    queriedBy: 'semantic' | 'keyword';
+    searchCount: number;
+    structureCount: number;
+    combinedCount: number;
+    qualifiedCount: number;
+    detailEnrichedCount: number;
+    skippedReason?: 'no_combined' | 'no_qualified';
+}
+
+export interface RecommendationDebug {
+    attempts: RecommendationAttempt[];
+    selectedQuery: string | null;
+    retryUsed: boolean;
+    fallbackReason: 'semantic_error_fallback_keyword' | null;
 }
 
 function uniqueStrings(values: string[] = []): string[] {
     return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+}
+
+const QUERY_REWRITE_PATTERNS = [
+    /^帮我找(找)?(一个|一下)?/g,
+    /^有没有(现成的)?/g,
+    /^请推荐(一个|一下)?/g,
+    /可复用/g,
+    /现成的/g,
+    /封装好的/g,
+    /(组件|函数|hook|工具|util)(实现)?/gi,
+];
+
+/**
+ * 对原始查询进行清洗和变体生成，去掉无意义的词，提炼更核心的查询内容
+ */
+function buildQueryVariants(rawQuery: string): string[] {
+    const base = rawQuery.trim();
+    if (!base) return [];
+
+    let rewritten = base;
+    for (const pattern of QUERY_REWRITE_PATTERNS) {
+        rewritten = rewritten.replace(pattern, ' ');
+    }
+    rewritten = rewritten.replace(/\s+/g, ' ').trim();
+
+    if (!rewritten || rewritten === base) {
+        return [base];
+    }
+    return uniqueStrings([base, rewritten]);
 }
 
 function normalizeToken(value: string): string {
@@ -311,7 +423,7 @@ function isStrongEnoughRecommendation(
     );
     const hasLiteralMatch = hasStrongLiteralMatch(query, item.symbol);
 
-    if (queriedBy === 'semantic') {
+    if (queriedBy === QUERIED_BY.SEMANTIC) {
         return (
             (item.score >= MIN_RECOMMENDATION_SCORE.semantic &&
                 (item.reason.textMatch.score >= MIN_SEMANTIC_TEXT_MATCH_SCORE ||
@@ -357,9 +469,224 @@ function computeRecommendationPriority(
 export class RecommendationService {
     constructor(private readonly repository: SymbolRepository) {}
 
+    /**
+     * 根据查询和提示信息从仓库中获取候选结果，优先语义搜索并在出错时回退关键词搜索，返回搜索结果和相关的调试信息供后续处理使用。
+     * @param query 查询字符串
+     * @param searchTypes 搜索的符号类型
+     * @param preferSemantic 是否优先使用语义搜索
+     * @param limit 返回结果的数量限制
+     * @returns 包含搜索结果和调试信息的对象
+     */
+    private async gatherSearchResults(
+        query: string,
+        searchTypes: SymbolType[],
+        preferSemantic: boolean,
+        limit: number
+    ): Promise<{
+        queriedBy: 'semantic' | 'keyword';
+        searchResults: Array<{ symbol: CodeSymbol; similarity: number }>;
+        fallbackReason: 'semantic_error_fallback_keyword' | null;
+    }> {
+        let queriedBy = preferSemantic
+            ? QUERIED_BY.SEMANTIC
+            : QUERIED_BY.KEYWORD;
+        let fallbackReason: 'semantic_error_fallback_keyword' | null = null;
+
+        if (preferSemantic) {
+            try {
+                const semanticGroups = await Promise.all(
+                    searchTypes.map((type) =>
+                        this.repository.searchSemanticHits(query, {
+                            type,
+                            limit: Math.max(
+                                limit * STRUCTURE_LIMIT_MULTIPLIER,
+                                STRUCTURE_LIMIT_MIN
+                            ),
+                        })
+                    )
+                );
+                const searchResults = semanticGroups.flat();
+                return {
+                    queriedBy,
+                    searchResults,
+                    fallbackReason,
+                };
+            } catch {
+                queriedBy = QUERIED_BY.KEYWORD;
+                fallbackReason = FALLBACK_REASON.SEMANTIC_ERROR;
+            }
+        }
+
+        const keywordGroups = await Promise.all(
+            searchTypes.map((type) => this.repository.search(query, type))
+        );
+        return {
+            queriedBy,
+            searchResults: keywordGroups
+                .flat()
+                .map((symbol) => ({ symbol, similarity: 0 })),
+            fallbackReason,
+        };
+    }
+
+    /**
+     * 对排名靠前的候选项进行详情补查
+     */
+    private async enrichTopCandidatesWithDetail(
+        ranked: Array<ReturnType<typeof rankSemanticHits>[number]>
+    ): Promise<{
+        ranked: Array<ReturnType<typeof rankSemanticHits>[number]>;
+        enrichedCount: number;
+    }> {
+        const topSymbols = ranked
+            .slice(0, ENRICH_TOP_K)
+            .map((item) => item.symbol);
+        if (topSymbols.length === 0) {
+            return { ranked, enrichedCount: 0 };
+        }
+
+        const detailMap = new Map<number, CodeSymbol>();
+        await Promise.all(
+            topSymbols.map(async (symbol) => {
+                try {
+                    const detail = await this.repository.getByName(symbol.name);
+                    if (detail && detail.id === symbol.id) {
+                        detailMap.set(symbol.id, detail);
+                    }
+                } catch {
+                    // 详情补查失败时继续主流程，避免影响推荐输出。
+                }
+            })
+        );
+
+        if (detailMap.size === 0) {
+            return { ranked, enrichedCount: 0 };
+        }
+
+        const enriched = ranked.map((item) => {
+            const detail = detailMap.get(item.symbol.id);
+            return detail ? { ...item, symbol: detail } : item;
+        });
+
+        return {
+            ranked: enriched,
+            enrichedCount: detailMap.size,
+        };
+    }
+
+    /**
+     * Agent 主循环：根据输入生成 query 变体，依次尝试多轮检索，融合语义/结构/关键词，Top-K 详情补查，质量门控，优先级调整。
+     * 命中即返回推荐，否则遍历所有变体，最终输出 debug trace。
+     */
     async recommendComponent(
         input: RecommendComponentInput
     ): Promise<RecommendComponentResult> {
+        this.logStart(input);
+        const {
+            requiredProps,
+            requiredHooks,
+            structureFields,
+            searchTypes,
+            preferSemantic,
+            limit,
+            queryVariants,
+        } = this.preprocessInput(input);
+        let queriedBy = preferSemantic
+            ? QUERIED_BY.SEMANTIC
+            : QUERIED_BY.KEYWORD;
+        let lastRankedCandidates: RecommendedCandidate[] = [];
+        let lastCombinedCount = 0;
+        let selectedQuery: string | null = null;
+        let fallbackReason: 'semantic_error_fallback_keyword' | null = null;
+        const attempts: RecommendationAttempt[] = [];
+
+        this.logSearchTypes(searchTypes);
+
+        for (const queryVariant of queryVariants) {
+            const { attempt, combined, searchResults, gathered } =
+                await this.tryQueryVariant({
+                    queryVariant,
+                    input,
+                    searchTypes,
+                    preferSemantic,
+                    limit,
+                    structureFields,
+                    requiredProps,
+                    requiredHooks,
+                });
+            queriedBy = gathered.queriedBy;
+            if (!fallbackReason && gathered.fallbackReason) {
+                fallbackReason = gathered.fallbackReason;
+            }
+            lastCombinedCount = combined.length;
+            this.logAttemptCheckpoint('attempt.summary', attempt);
+            if (combined.length === 0) {
+                attempt.skippedReason = SKIPPED_REASON.NO_COMBINED;
+                this.logAttemptCheckpoint(
+                    'attempt.skipped.no_combined',
+                    attempt
+                );
+                attempts.push(attempt);
+                continue;
+            }
+
+            const candidates = await this.rankAndEnrichCandidates({
+                combined,
+                searchResults,
+                queryVariant,
+                queriedBy,
+                requiredProps,
+                requiredHooks,
+                attempt,
+                limit,
+            });
+            lastRankedCandidates = candidates;
+            if (candidates.length > 0) {
+                selectedQuery = queryVariant;
+                attempts.push(attempt);
+                this.logAttemptCheckpoint('attempt.success', attempt);
+                this.logAttemptsTrace('recommendComponent.result.found', {
+                    selectedQuery,
+                    queriedBy,
+                    attempts,
+                    fallbackReason,
+                });
+                return this.buildResult({
+                    recommended: candidates[0] ?? null,
+                    alternatives: candidates.slice(1, limit),
+                    queriedBy,
+                    requiredProps,
+                    requiredHooks,
+                    attempts,
+                    selectedQuery,
+                    fallbackReason,
+                });
+            }
+            this.logAttemptCheckpoint(
+                'attempt.no_candidate_after_rank',
+                attempt
+            );
+            attempts.push(attempt);
+        }
+        this.logAttemptsTrace('recommendComponent.result.not_found', {
+            selectedQuery,
+            queriedBy,
+            attempts,
+            fallbackReason,
+        });
+        return this.buildResult({
+            recommended: null,
+            alternatives: [],
+            queriedBy,
+            requiredProps,
+            requiredHooks,
+            attempts,
+            selectedQuery,
+            fallbackReason,
+        });
+    }
+
+    private logStart(input: RecommendComponentInput) {
         console.error(
             '[code-intelligence-mcp] recommendComponent.start query=%s category=%s semantic=%s limit=%s requiredProps=%s requiredHooks=%s',
             input.query,
@@ -369,7 +696,16 @@ export class RecommendationService {
             JSON.stringify(input.requiredProps ?? []),
             JSON.stringify(input.requiredHooks ?? [])
         );
+    }
 
+    private logSearchTypes(searchTypes: SymbolType[]) {
+        console.error(
+            '[code-intelligence-mcp] recommendComponent.searchTypes types=%s',
+            JSON.stringify(searchTypes)
+        );
+    }
+
+    private preprocessInput(input: RecommendComponentInput) {
         const requiredProps = uniqueStrings(input.requiredProps);
         const requiredHooks = uniqueStrings(input.requiredHooks);
         const structureFields = uniqueStrings([
@@ -379,113 +715,87 @@ export class RecommendationService {
         const searchTypes = inferSearchTypes(input);
         const preferSemantic = input.semantic ?? true;
         const limit = input.limit ?? 5;
-        let queriedBy: 'semantic' | 'keyword' = preferSemantic
-            ? 'semantic'
-            : 'keyword';
-        let searchResults: Array<{ symbol: CodeSymbol; similarity: number }>;
-
-        console.error(
-            '[code-intelligence-mcp] recommendComponent.searchTypes types=%s',
-            JSON.stringify(searchTypes)
+        const queryVariants = buildQueryVariants(input.query).slice(
+            0,
+            MAX_QUERY_VARIANTS
         );
+        const res = {
+            requiredProps,
+            requiredHooks,
+            structureFields,
+            searchTypes,
+            preferSemantic,
+            limit,
+            queryVariants,
+        };
+        console.error(
+            '[code-intelligence-mcp] recommendComponent.preprocess queryVariants=%s requiredProps=%s requiredHooks=%s structureFields=%s searchTypes=%s preferSemantic=%s limit=%s',
+            JSON.stringify(queryVariants),
+            JSON.stringify(requiredProps),
+            JSON.stringify(requiredHooks),
+            JSON.stringify(structureFields),
+            JSON.stringify(searchTypes),
+            String(preferSemantic),
+            String(limit)
+        );
+        return res;
+    }
 
-        if (preferSemantic) {
-            try {
-                const semanticGroups = await Promise.all(
-                    searchTypes.map((type) =>
-                        this.repository.searchSemanticHits(input.query, {
-                            type,
-                            limit: Math.max(limit * 4, 12),
-                        })
-                    )
-                );
-                searchResults = semanticGroups.flat();
-                console.error(
-                    '[code-intelligence-mcp] recommendComponent.semanticHits count=%s top=%s',
-                    String(searchResults.length),
-                    JSON.stringify(
-                        searchResults.slice(0, 3).map((item) => ({
-                            id: item.symbol.id,
-                            name: item.symbol.name,
-                            path: item.symbol.path,
-                            similarity: Number(item.similarity.toFixed(4)),
-                        }))
-                    )
-                );
-            } catch {
-                queriedBy = 'keyword';
-                const keywordGroups = await Promise.all(
-                    searchTypes.map((type) =>
-                        this.repository.search(input.query, type)
-                    )
-                );
-                searchResults = keywordGroups
-                    .flat()
-                    .map((symbol) => ({ symbol, similarity: 0 }));
-                console.error(
-                    '[code-intelligence-mcp] recommendComponent.semanticFailed fallback=keyword count=%s top=%s',
-                    String(searchResults.length),
-                    JSON.stringify(
-                        searchResults.slice(0, 3).map((item) => ({
-                            id: item.symbol.id,
-                            name: item.symbol.name,
-                            path: item.symbol.path,
-                        }))
-                    )
-                );
-            }
-        } else {
-            const keywordGroups = await Promise.all(
-                searchTypes.map((type) =>
-                    this.repository.search(input.query, type)
-                )
-            );
-            searchResults = keywordGroups
-                .flat()
-                .map((symbol) => ({ symbol, similarity: 0 }));
-            console.error(
-                '[code-intelligence-mcp] recommendComponent.keywordOnly count=%s top=%s',
-                String(searchResults.length),
-                JSON.stringify(
-                    searchResults.slice(0, 3).map((item) => ({
-                        id: item.symbol.id,
-                        name: item.symbol.name,
-                        path: item.symbol.path,
-                    }))
-                )
-            );
-        }
-
+    private async tryQueryVariant({
+        queryVariant,
+        input,
+        searchTypes,
+        preferSemantic,
+        limit,
+        structureFields,
+        requiredProps,
+        requiredHooks,
+    }: {
+        queryVariant: string;
+        input: RecommendComponentInput;
+        searchTypes: SymbolType[];
+        preferSemantic: boolean;
+        limit: number;
+        structureFields: string[];
+        requiredProps: string[];
+        requiredHooks: string[];
+    }) {
+        const gathered = await this.gatherSearchResults(
+            queryVariant,
+            searchTypes,
+            preferSemantic,
+            limit
+        );
+        const searchResults = gathered.searchResults;
+        const attempt: RecommendationAttempt = {
+            query: queryVariant,
+            queriedBy: gathered.queriedBy,
+            searchCount: searchResults.length,
+            structureCount: 0,
+            combinedCount: 0,
+            qualifiedCount: 0,
+            detailEnrichedCount: 0,
+        };
         const structureResults = structureFields.length
             ? (
                   await Promise.all(
                       searchTypes.map((type) =>
                           this.repository.searchByStructure(structureFields, {
                               type,
-                              limit: Math.max(limit * 4, 12),
+                              limit: Math.max(
+                                  limit * STRUCTURE_LIMIT_MULTIPLIER,
+                                  STRUCTURE_LIMIT_MIN
+                              ),
                           })
                       )
                   )
               ).flat()
             : [];
-        console.error(
-            '[code-intelligence-mcp] recommendComponent.structureHits fields=%s count=%s top=%s',
-            JSON.stringify(structureFields),
-            String(structureResults.length),
-            JSON.stringify(
-                structureResults.slice(0, 3).map((symbol) => ({
-                    id: symbol.id,
-                    name: symbol.name,
-                    path: symbol.path,
-                }))
-            )
-        );
-        // 合并逻辑：先合并语义搜索（或关键词模糊搜索）和结构搜索结果去重
+        attempt.structureCount = structureResults.length;
         const mergedBeforeCategory = mergeCandidates([
             ...structureResults,
             ...searchResults.map((item) => item.symbol),
         ]);
-        // 再按 category 过滤（如果有 category 限制）
         let combined = mergedBeforeCategory.filter((symbol) =>
             input.category
                 ? (symbol.category ?? '')
@@ -493,68 +803,42 @@ export class RecommendationService {
                       .includes(input.category.toLowerCase())
                 : true
         );
-
-        // LLM 可能把 "input" 之类词误当作 category，导致误筛空；若筛空则回退为不按 category 过滤。
         if (
             combined.length === 0 &&
             input.category &&
             mergedBeforeCategory.length
         ) {
-            console.error(
-                '[code-intelligence-mcp] recommendComponent.categoryFallback category=%s merged=%s -> useUnfiltered',
-                input.category,
-                String(mergedBeforeCategory.length)
-            );
             combined = mergedBeforeCategory;
         }
-
         const reusableCandidates = combined.filter(isReusableCandidate);
         if (reusableCandidates.length > 0) {
-            console.error(
-                '[code-intelligence-mcp] recommendComponent.reusableFilter before=%s after=%s removed=%s',
-                String(combined.length),
-                String(reusableCandidates.length),
-                String(combined.length - reusableCandidates.length)
-            );
             combined = reusableCandidates;
         }
+        attempt.combinedCount = combined.length;
+        return { attempt, combined, searchResults, gathered };
+    }
 
-        console.error(
-            '[code-intelligence-mcp] recommendComponent.combine merged=%s afterCategory=%s top=%s',
-            String(mergedBeforeCategory.length),
-            String(combined.length),
-            JSON.stringify(
-                combined.slice(0, 3).map((symbol) => ({
-                    id: symbol.id,
-                    name: symbol.name,
-                    path: symbol.path,
-                    category: symbol.category,
-                }))
-            )
-        );
-
-        if (combined.length === 0) {
-            console.error(
-                '[code-intelligence-mcp] recommendComponent.emptyResult query=%s queriedBy=%s requiredProps=%s requiredHooks=%s',
-                input.query,
-                queriedBy,
-                JSON.stringify(requiredProps),
-                JSON.stringify(requiredHooks)
-            );
-            return {
-                recommended: null,
-                alternatives: [],
-                queriedBy,
-                structureFilter: {
-                    requiredProps,
-                    requiredHooks,
-                },
-                message: '未找到符合条件的可复用组件。',
-            };
-        }
-        // 最后排序并切分首选/备选
+    private async rankAndEnrichCandidates({
+        combined,
+        searchResults,
+        queryVariant,
+        queriedBy,
+        requiredProps,
+        requiredHooks,
+        attempt,
+        limit,
+    }: {
+        combined: CodeSymbol[];
+        searchResults: Array<{ symbol: CodeSymbol; similarity: number }>;
+        queryVariant: string;
+        queriedBy: 'semantic' | 'keyword';
+        requiredProps: string[];
+        requiredHooks: string[];
+        attempt: RecommendationAttempt;
+        limit: number;
+    }): Promise<RecommendedCandidate[]> {
         const ranked =
-            queriedBy === 'semantic'
+            queriedBy === QUERIED_BY.SEMANTIC
                 ? rankSemanticHits(
                       combined.map((symbol) => ({
                           symbol,
@@ -563,31 +847,30 @@ export class RecommendationService {
                                   (item) => item.symbol.id === symbol.id
                               )?.similarity ?? 0.55,
                       })),
-                      input.query
+                      queryVariant
                   )
-                : rankSymbols(input.query, combined);
-
-        const qualifiedRanked = ranked.filter((item) =>
+                : rankSymbols(queryVariant, combined);
+        const enriched = await this.enrichTopCandidatesWithDetail(ranked);
+        const enrichedRanked = enriched.ranked;
+        attempt.detailEnrichedCount = enriched.enrichedCount;
+        const qualifiedRanked = enrichedRanked.filter((item) =>
             isStrongEnoughRecommendation(
                 item,
-                input.query,
+                queryVariant,
                 queriedBy,
                 requiredProps,
                 requiredHooks
             )
         );
-        console.error(
-            '[code-intelligence-mcp] recommendComponent.qualityGate before=%s after=%s queriedBy=%s',
-            String(ranked.length),
-            String(qualifiedRanked.length),
-            queriedBy
-        );
-
+        attempt.qualifiedCount = qualifiedRanked.length;
+        if (qualifiedRanked.length === 0) {
+            attempt.skippedReason = SKIPPED_REASON.NO_QUALIFIED;
+        }
         const prioritizedRanked = qualifiedRanked
             .map((item) => {
                 const adjusted = computeRecommendationPriority(
                     item,
-                    input.query
+                    queryVariant
                 );
                 return {
                     item,
@@ -596,7 +879,6 @@ export class RecommendationService {
                 };
             })
             .sort((a, b) => b.adjustedScore - a.adjustedScore);
-
         const candidates = prioritizedRanked.map((entry) =>
             toCandidate(
                 entry.item.symbol,
@@ -607,32 +889,90 @@ export class RecommendationService {
             )
         );
         console.error(
-            '[code-intelligence-mcp] recommendComponent.ranked count=%s top=%s',
-            String(candidates.length),
-            JSON.stringify(
-                candidates.slice(0, 3).map((candidate) => ({
-                    id: candidate.id,
-                    name: candidate.name,
-                    path: candidate.path,
-                    score: candidate.score,
-                    matchedProps: candidate.matchedProps,
-                    matchedHooks: candidate.matchedHooks,
-                }))
-            )
+            '[code-intelligence-mcp] recommendComponent.rank query=%s queriedBy=%s enriched=%s qualified=%s candidates=%s',
+            queryVariant,
+            queriedBy,
+            String(enrichedRanked.length),
+            String(qualifiedRanked.length),
+            String(candidates.length)
         );
+        return candidates;
+    }
 
+    private logAttemptCheckpoint(
+        stage: string,
+        attempt: RecommendationAttempt
+    ) {
+        console.error(
+            '[code-intelligence-mcp] recommendComponent.%s query=%s queriedBy=%s search=%s structure=%s combined=%s qualified=%s enriched=%s skipped=%s',
+            stage,
+            attempt.query,
+            attempt.queriedBy,
+            String(attempt.searchCount),
+            String(attempt.structureCount),
+            String(attempt.combinedCount),
+            String(attempt.qualifiedCount),
+            String(attempt.detailEnrichedCount),
+            attempt.skippedReason ?? 'none'
+        );
+    }
+
+    private logAttemptsTrace(
+        stage: string,
+        payload: {
+            selectedQuery: string | null;
+            queriedBy: 'semantic' | 'keyword';
+            attempts: RecommendationAttempt[];
+            fallbackReason: 'semantic_error_fallback_keyword' | null;
+        }
+    ) {
+        console.error(
+            '[code-intelligence-mcp] %s selectedQuery=%s queriedBy=%s attempts=%s fallbackReason=%s',
+            stage,
+            payload.selectedQuery ?? 'none',
+            payload.queriedBy,
+            JSON.stringify(payload.attempts),
+            payload.fallbackReason ?? 'none'
+        );
+    }
+
+    private buildResult({
+        recommended,
+        alternatives,
+        queriedBy,
+        requiredProps,
+        requiredHooks,
+        attempts,
+        selectedQuery,
+        fallbackReason,
+    }: {
+        recommended: RecommendedCandidate | null;
+        alternatives: RecommendedCandidate[];
+        queriedBy: 'semantic' | 'keyword';
+        requiredProps: string[];
+        requiredHooks: string[];
+        attempts: RecommendationAttempt[];
+        selectedQuery: string | null;
+        fallbackReason: 'semantic_error_fallback_keyword' | null;
+    }): RecommendComponentResult {
         return {
-            recommended: candidates[0] ?? null,
-            alternatives: candidates.slice(1, limit),
+            recommended,
+            alternatives,
             queriedBy,
             structureFilter: {
                 requiredProps,
                 requiredHooks,
             },
             message:
-                candidates.length > 0
-                    ? '已找到可复用组件候选，首选已按综合匹配度排序。'
-                    : '未找到符合条件的可复用组件。',
+                recommended !== null
+                    ? RECOMMENDATION_MESSAGE.FOUND
+                    : RECOMMENDATION_MESSAGE.NOT_FOUND,
+            debug: {
+                attempts,
+                selectedQuery,
+                retryUsed: attempts.length > 1,
+                fallbackReason,
+            },
         };
     }
 }
