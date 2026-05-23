@@ -217,7 +217,7 @@ export class ChunkRepository {
                    1 - (embedding <=> $1::vector) AS similarity
             FROM ${env.chunksTable}
             WHERE embedding IS NOT NULL
-              AND status = $2
+              AND status = $2::smallint
         `;
 
         if (opts?.path) {

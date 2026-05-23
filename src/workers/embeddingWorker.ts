@@ -55,7 +55,7 @@ async function processEmbedJob(
     // Step 1: 缓存命中检查 —— 相同 semantic_hash 已有 online 向量
     const { rows: cached } = await pool.query<any>(
         `SELECT embedding FROM ${table}
-         WHERE semantic_hash = $1 AND status = $2 AND embedding IS NOT NULL
+         WHERE semantic_hash = $1 AND status = $2::smallint AND embedding IS NOT NULL
          LIMIT 1`,
         [semanticHash, SYMBOL_STATUS.ONLINE]
     );
@@ -73,8 +73,8 @@ async function processEmbedJob(
         // cache hit 时只需把 pending 行的向量补齐（有可能是新增的同语义符号）
         const cacheResult = await pool.query(
             `UPDATE ${table}
-             SET embedding = $1::vector, status = $2
-             WHERE semantic_hash = $3 AND status = $4`,
+             SET embedding = $1::vector, status = $2::smallint
+             WHERE semantic_hash = $3 AND status = $4::smallint`,
             [
                 `[${vector.join(',')}]`,
                 SYMBOL_STATUS.ONLINE,
@@ -92,7 +92,7 @@ async function processEmbedJob(
     const { rows: pending } = await pool.query<any>(
         `SELECT name, type, category, path, description, content, meta
          FROM ${table}
-         WHERE semantic_hash = $1 AND status = $2
+         WHERE semantic_hash = $1 AND status = $2::smallint
          LIMIT 1`,
         [semanticHash, SYMBOL_STATUS.PENDING]
     );
@@ -124,8 +124,8 @@ async function processEmbedJob(
     // Step 2: 批量写入 —— 覆盖所有相同 semantic_hash 的 pending 行
     const result = await pool.query(
         `UPDATE ${table}
-         SET embedding = $1::vector, status = $2, category = COALESCE($3, category)
-         WHERE semantic_hash = $4 AND status = $5`,
+         SET embedding = $1::vector, status = $2::smallint, category = COALESCE($3, category)
+         WHERE semantic_hash = $4 AND status = $5::smallint`,
         [
             `[${vector.join(',')}]`,
             SYMBOL_STATUS.ONLINE,

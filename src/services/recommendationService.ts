@@ -850,12 +850,38 @@ export class RecommendationService {
                       queryVariant
                   )
                 : rankSymbols(queryVariant, combined);
-        const enriched = await this.enrichTopCandidatesWithDetail(ranked);
-        const enrichedRanked = enriched.ranked;
-        attempt.detailEnrichedCount = enriched.enrichedCount;
-        const qualifiedRanked = enrichedRanked.filter((item) =>
-            isStrongEnoughRecommendation(
+
+        // 优先级预排序：仅依赖 name/path，无需 meta，前置到详情补查之前。
+        // 目的：确保补查的 Top-K 是优先级调整后最可能命中的候选，
+        // 避免高语义分但字面命中弱的候选占据补查名额，遗漏字面强命中的候选。
+        const priorityScored = ranked.map((item) => {
+            const adjusted = computeRecommendationPriority(item, queryVariant);
+            return {
                 item,
+                adjustedScore: adjusted.score,
+                adjustedReason: adjusted.reason,
+            };
+        });
+        priorityScored.sort((a, b) => b.adjustedScore - a.adjustedScore);
+
+        // 对优先级预排序后的 Top-K 做详情补查（getByName 补全完整 meta）
+        const enriched = await this.enrichTopCandidatesWithDetail(
+            priorityScored.map((e) => e.item)
+        );
+        attempt.detailEnrichedCount = enriched.enrichedCount;
+
+        // 将补查结果回填到 priorityScored，保持优先级排序
+        const enrichedPriorityScored = enriched.ranked.map((item, idx) => ({
+            item,
+            adjustedScore: priorityScored[idx]?.adjustedScore ?? item.score,
+            adjustedReason:
+                priorityScored[idx]?.adjustedReason ?? item.reason.summary,
+        }));
+
+        // 质量门控：score 阈值 + requiredProps/Hooks 命中校验（依赖完整 meta，必须在补查之后）
+        const qualifiedRanked = enrichedPriorityScored.filter((entry) =>
+            isStrongEnoughRecommendation(
+                entry.item,
                 queryVariant,
                 queriedBy,
                 requiredProps,
@@ -866,20 +892,9 @@ export class RecommendationService {
         if (qualifiedRanked.length === 0) {
             attempt.skippedReason = SKIPPED_REASON.NO_QUALIFIED;
         }
-        const prioritizedRanked = qualifiedRanked
-            .map((item) => {
-                const adjusted = computeRecommendationPriority(
-                    item,
-                    queryVariant
-                );
-                return {
-                    item,
-                    adjustedScore: adjusted.score,
-                    adjustedReason: adjusted.reason,
-                };
-            })
-            .sort((a, b) => b.adjustedScore - a.adjustedScore);
-        const candidates = prioritizedRanked.map((entry) =>
+
+        // 已按优先级排序，直接构建候选结果
+        const candidates = qualifiedRanked.map((entry) =>
             toCandidate(
                 entry.item.symbol,
                 entry.adjustedScore,
@@ -892,7 +907,7 @@ export class RecommendationService {
             '[code-intelligence-mcp] recommendComponent.rank query=%s queriedBy=%s enriched=%s qualified=%s candidates=%s',
             queryVariant,
             queriedBy,
-            String(enrichedRanked.length),
+            String(enrichedPriorityScored.length),
             String(qualifiedRanked.length),
             String(candidates.length)
         );

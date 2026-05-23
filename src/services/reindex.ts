@@ -1,5 +1,6 @@
 import { resolve, join } from 'node:path';
 import { readFileSync } from 'node:fs';
+import type { PoolClient } from 'pg';
 import fg from 'fast-glob';
 import { env } from '../config/env.js';
 import { getPool } from '../db/postgres.js';
@@ -12,6 +13,7 @@ import {
     enqueueEmbeddingBatch,
     closeEmbeddingQueue,
 } from '../services/embeddingQueue.js';
+import { reconcileIndexedSymbols } from './reconcileIndexedSymbols.js';
 import { SYMBOL_STATUS } from '../config/symbolStatus.js';
 
 export interface ReindexOptions {
@@ -185,22 +187,43 @@ export async function runReindex(
             rows.map((r) => r.semantic_hash).filter(Boolean) as string[]
         ),
     ];
+    const relPathsForIndexedFiles = filesToIndex.map((file) =>
+        getRelativePathForDisplay(projectRoot, file)
+    );
 
     if (!dryRun) {
-        // forceRebuild：先清空 DB 中已有的 embedding，使 worker cache check 必然 miss
-        if (forceRebuild && pendingHashes.length > 0) {
-            await pool!.query(
-                `UPDATE ${env.symbolsTable}
-                 SET embedding = NULL, status = $1
-                 WHERE semantic_hash = ANY($2)`,
-                [SYMBOL_STATUS.PENDING, pendingHashes]
-            );
-            console.error(
-                `[reindex] forceRebuild: cleared embeddings for ${pendingHashes.length} semantic_hash(es)`
-            );
-        }
+        const client = await pool!.connect();
+        try {
+            await client.query('BEGIN');
 
-        await upsertSymbols(pool!, rows, nullPayload);
+            // forceRebuild：先清空 DB 中已有的 embedding，使 worker cache check 必然 miss；
+            // file_hash 一并重置，确保本次重建与后续普通 reindex 都不会复用旧缓存判定。
+            if (forceRebuild && pendingHashes.length > 0) {
+                await client.query(
+                    `UPDATE ${env.symbolsTable}
+                     SET embedding = NULL, status = $1::smallint, file_hash = NULL
+                     WHERE semantic_hash = ANY($2)`,
+                    [SYMBOL_STATUS.PENDING, pendingHashes]
+                );
+                console.error(
+                    `[reindex] forceRebuild: cleared embeddings + file_hash for ${pendingHashes.length} semantic_hash(es)`
+                );
+            }
+
+            await upsertSymbols(client, rows, nullPayload);
+            await reconcileIndexedSymbols(
+                client,
+                relPathsForIndexedFiles,
+                rows
+            );
+
+            await client.query('COMMIT');
+        } catch (error) {
+            await client.query('ROLLBACK');
+            throw error;
+        } finally {
+            client.release();
+        }
 
         if (pendingHashes.length > 0) {
             await enqueueEmbeddingBatch(pendingHashes, env.symbolsTable);

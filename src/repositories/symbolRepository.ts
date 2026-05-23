@@ -199,7 +199,7 @@ export class SymbolRepository {
               path ILIKE $1 OR
               meta::text ILIKE $1
             )
-        AND status = $2
+        AND status = $2::smallint
     `;
 
         if (tokens.length) {
@@ -219,7 +219,7 @@ export class SymbolRepository {
               meta::text ILIKE $1 OR
               (${tokenClauses.join(' OR ')})
             )
-        AND status = $2
+        AND status = $2::smallint
     `;
         }
 
@@ -299,7 +299,7 @@ export class SymbolRepository {
              1 - (embedding <=> $1::vector) AS similarity
       FROM ${env.symbolsTable}
       WHERE embedding IS NOT NULL
-        AND status = $2
+                AND status = $2::smallint
     `;
 
         if (opts?.type) {
@@ -365,9 +365,10 @@ export class SymbolRepository {
       SELECT id, name, type, category, path, description, content, meta::text AS meta, usage_count, created_at
       FROM ${env.symbolsTable}
       WHERE name = $1
+                AND status = $2::smallint
       LIMIT 1
       `,
-            [name]
+            [name, SEARCHABLE_STATUS]
         );
 
         console.error(
@@ -462,8 +463,10 @@ export class SymbolRepository {
         let sql = `
       SELECT id, name, type, category, path, description, content, meta::text AS meta, usage_count, created_at
       FROM ${env.symbolsTable}
-      WHERE 1 = 1
+                        WHERE status = $1::smallint
     `;
+
+        params.push(SEARCHABLE_STATUS);
 
         if (type) {
             params.push(type);
