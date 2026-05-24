@@ -3,12 +3,11 @@ import { env } from '../config/env.js';
 import { getPool } from '../db/postgres.js';
 import { indexProject } from '../indexer/indexProject.js';
 import { upsertSymbols } from '../indexer/persistSymbols.js';
-import { SYMBOL_STATUS } from '../config/symbolStatus.js';
 import {
     enqueueEmbeddingBatch,
     closeEmbeddingQueue,
 } from '../services/embeddingQueue.js';
-import { reconcileIndexedSymbols } from '../services/reconcileIndexedSymbols.js';
+import { markRemovedSymbolsOffline } from '../services/reconcileIndexedSymbols.js';
 
 export interface IncrementalIndexOptions {
     projectRoot: string;
@@ -38,13 +37,12 @@ export async function runIncrementalIndex(opts: IncrementalIndexOptions) {
     try {
         await client.query('BEGIN');
 
-        // 1. 删除文件：标记 offline
-        for (const file of deletedFiles) {
-            await client.query(
-                `UPDATE ${tableName} SET status = $1::smallint WHERE path = $2`,
-                [SYMBOL_STATUS.OFFLINE, file]
-            );
-            console.error(`[ci-index] marked offline: ${file}`);
+        // 1. 删除文件：复用 reconcile 的整文件 offline 语义
+        if (deletedFiles.length > 0) {
+            await markRemovedSymbolsOffline(client, deletedFiles, []);
+            for (const file of deletedFiles) {
+                console.error(`[ci-index] marked offline: ${file}`);
+            }
         }
 
         // 2. 重命名文件：更新path
@@ -64,7 +62,7 @@ export async function runIncrementalIndex(opts: IncrementalIndexOptions) {
                 console.error(`[ci-index] upserted: ${row.path}:${row.name}`);
             }
 
-            await reconcileIndexedSymbols(client, changedFiles, rows);
+            await markRemovedSymbolsOffline(client, changedFiles, rows);
         }
 
         await client.query('COMMIT');

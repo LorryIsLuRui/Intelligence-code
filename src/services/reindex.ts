@@ -13,7 +13,7 @@ import {
     enqueueEmbeddingBatch,
     closeEmbeddingQueue,
 } from '../services/embeddingQueue.js';
-import { reconcileIndexedSymbols } from './reconcileIndexedSymbols.js';
+import { markRemovedSymbolsOffline } from './reconcileIndexedSymbols.js';
 import { SYMBOL_STATUS } from '../config/symbolStatus.js';
 
 export interface ReindexOptions {
@@ -209,9 +209,11 @@ export async function runReindex(
                     `[reindex] forceRebuild: cleared embeddings + file_hash for ${pendingHashes.length} semantic_hash(es)`
                 );
             }
-
+            // 能复用 status=online
+            // 结构变了，不能复用 status=pending embedding=null
             await upsertSymbols(client, rows, nullPayload);
-            await reconcileIndexedSymbols(
+            // 处理 file内 symbol下线 或 整个file所有symbols下线
+            await markRemovedSymbolsOffline(
                 client,
                 relPathsForIndexedFiles,
                 rows

@@ -35,16 +35,17 @@ export async function upsertSymbols(
       meta          = EXCLUDED.meta,
       updated_user  = EXCLUDED.updated_user,
       embedding     = CASE
-                        WHEN EXCLUDED.embedding IS NOT NULL THEN EXCLUDED.embedding
-                        WHEN EXCLUDED.semantic_hash != ${t}.semantic_hash THEN NULL
-                        ELSE ${t}.embedding
+                        WHEN EXCLUDED.embedding IS NOT NULL THEN EXCLUDED.embedding  -- 本次带了新向量，直接使用
+                        WHEN EXCLUDED.semantic_hash != ${t}.semantic_hash THEN NULL  -- 结构变了，旧向量作废，等重算
+                        ELSE ${t}.embedding                                          -- 结构未变，复用旧向量
                       END,
       semantic_hash = EXCLUDED.semantic_hash,
       file_hash     = EXCLUDED.file_hash,
       status        = CASE
-                        WHEN EXCLUDED.embedding IS NOT NULL THEN ${SYMBOL_STATUS.ONLINE}
-                        WHEN EXCLUDED.semantic_hash != ${t}.semantic_hash THEN ${SYMBOL_STATUS.PENDING}
-                        ELSE ${t}.status
+                        WHEN EXCLUDED.embedding IS NOT NULL THEN ${SYMBOL_STATUS.ONLINE}   -- 本次带了新向量 → 直接 online
+                        WHEN EXCLUDED.semantic_hash != ${t}.semantic_hash THEN ${SYMBOL_STATUS.PENDING}  -- 结构变了，需重新 embedding → pending
+                        WHEN ${t}.embedding IS NOT NULL THEN ${SYMBOL_STATUS.ONLINE}        -- 结构未变且已有向量（含 offline 恢复）→ online
+                        ELSE ${SYMBOL_STATUS.PENDING}                                       -- 结构未变但无向量（首次 or 之前失败）→ pending
                       END,
       updated_at    = NOW()
   `;
