@@ -8,6 +8,7 @@ import {
     type FunctionDeclaration,
     type FunctionExpression,
 } from 'ts-morph';
+import { makeParamPlaceholder } from './paramPlaceholder.js';
 
 /**
  * 将节点收窄为可调用的函数形态，便于统一抽取参数与函数体。
@@ -23,23 +24,27 @@ function asFn(
 }
 
 /**
- * 取第一个形参的「对外可见名」：对象解构取各属性名，单参数取标识符文本。
+ * 提取稳定参数结构：普通位置参数统一为 `$pN`，对象解构保留字段名。
  * @returns 用于后续在 `component` 中映射为 `props`，在 `util` 中保留为 `params`。
  */
 function extractParamNames(
     fn: FunctionDeclaration | FunctionExpression | ArrowFunction
 ): string[] {
     const params = fn.getParameters();
-    if (params.length === 0) return [];
-    const first = params[0];
-    const nameNode = first.getNameNode();
-    if (Node.isObjectBindingPattern(nameNode)) {
-        return nameNode.getElements().map((el) => el.getName());
-    }
-    if (Node.isIdentifier(nameNode)) {
-        return [nameNode.getText()];
-    }
-    return [];
+    return params.flatMap((param, index) => {
+        const nameNode = param.getNameNode();
+        if (Node.isObjectBindingPattern(nameNode)) {
+            return nameNode
+                .getElements()
+                .map((el) => el.getName())
+                .filter(Boolean)
+                .sort();
+        }
+        if (Node.isIdentifier(nameNode)) {
+            return [makeParamPlaceholder(index, param.isRestParameter())];
+        }
+        return [makeParamPlaceholder(index, param.isRestParameter())];
+    });
 }
 
 /**

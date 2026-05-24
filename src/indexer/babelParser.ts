@@ -8,7 +8,79 @@ import type { IndexedSymbolRow } from './indexProject.js';
 import {
     getRelativePathForDisplay,
     inferCategoryFromPath,
+    inferCategoryFromName,
 } from './heuristics.js';
+import { makeParamPlaceholder } from './paramPlaceholder.js';
+import { computeFileHash } from './tsAstNormalizer.js';
+import { computeSemanticHashJs } from './jsAstNormalizer.js';
+
+interface IndexedSymbolRowOut extends IndexedSymbolRow {
+    node: bt.Node;
+}
+
+interface JsDocInfo {
+    description: string | null;
+    returnType?: string;
+}
+
+function inheritLeadingComments<T extends bt.Node>(
+    target: T,
+    source?: bt.Node | null
+): T {
+    const sourceComments = (source as bt.Node & { leadingComments?: unknown })
+        ?.leadingComments;
+    const targetNode = target as T & { leadingComments?: unknown };
+    if (!targetNode.leadingComments && sourceComments) {
+        targetNode.leadingComments = sourceComments;
+    }
+    return target;
+}
+
+function normalizeJsDocType(type: string): string {
+    const text = type.trim().toLowerCase();
+    if (text.includes('string')) return 'string';
+    if (text.includes('number')) return 'number';
+    if (text.includes('boolean')) return 'boolean';
+    if (text.includes('array')) return 'array';
+    if (text.includes('object')) return 'object';
+    if (text.includes('window') || text.includes('htmlelement'))
+        return 'object';
+    if (text.includes('void')) return 'void';
+    if (text.includes('null')) return 'null';
+    return 'unknown';
+}
+
+function parseJsDocInfo(node: bt.Node): JsDocInfo {
+    const comments = (
+        node as bt.Node & {
+            leadingComments?: Array<{ type?: string; value?: string }>;
+        }
+    ).leadingComments;
+    if (!comments?.length) return { description: null };
+
+    const block = comments.find((comment) => comment.type === 'CommentBlock');
+    if (!block?.value) return { description: null };
+
+    const lines = block.value
+        .split('\n')
+        .map((line) => line.replace(/^\s*\*\s?/, '').trim())
+        .filter(Boolean);
+
+    const descriptionLines = lines.filter((line) => !line.startsWith('@'));
+    const returnLine = lines.find(
+        (line) => line.startsWith('@returns') || line.startsWith('@return')
+    );
+    const returnMatch = returnLine?.match(/@returns?\s+\{([^}]+)\}/);
+
+    return {
+        description: descriptionLines.length
+            ? descriptionLines.join(' ')
+            : null,
+        ...(returnMatch
+            ? { returnType: normalizeJsDocType(returnMatch[1]) }
+            : {}),
+    };
+}
 
 /** 从 JS 文件内容解析导出的代码块 */
 export function parseJsFile(
@@ -16,7 +88,7 @@ export function parseJsFile(
     content: string,
     projectRoot: string
 ): IndexedSymbolRow[] {
-    const out: IndexedSymbolRow[] = [];
+    const out: IndexedSymbolRowOut[] = [];
     const isJsx = filePath.endsWith('.jsx') || filePath.endsWith('.tsx');
 
     let ast: bt.File;
@@ -63,8 +135,23 @@ export function parseJsFile(
             out.push(...rows);
         }
     }
-
-    return out;
+    // 第三轮：更新content、file_hash、semantic_hash 字段
+    const outWithTwoHash = out.map((o) => {
+        const [semantic_hash, stableStr] = computeSemanticHashJs(o);
+        const { name, type, description, meta, category, path } = o;
+        return {
+            name,
+            type,
+            category,
+            path,
+            description,
+            meta,
+            content: stableStr,
+            file_hash: computeFileHash(content),
+            semantic_hash,
+        };
+    });
+    return outWithTwoHash;
 }
 
 /** 处理导出的声明 */
@@ -73,8 +160,8 @@ function processStatement(
     filePath: string,
     isJsx: boolean,
     projectRoot: string
-): IndexedSymbolRow[] {
-    const out: IndexedSymbolRow[] = [];
+): IndexedSymbolRowOut[] {
+    const out: IndexedSymbolRowOut[] = [];
 
     // 处理命名导出: export function Foo() {}
     if (bt.isExportNamedDeclaration(stmt)) {
@@ -87,7 +174,7 @@ function processStatement(
                 out.push(
                     createRowFromFunction(
                         name,
-                        decl,
+                        inheritLeadingComments(decl, stmt),
                         filePath,
                         projectRoot,
                         isJsx
@@ -113,7 +200,10 @@ function processStatement(
                         (bt.isArrowFunctionExpression(init) ||
                             bt.isFunctionExpression(init))
                     ) {
-                        const fnDecl = arrowToFunction(name, init);
+                        const fnDecl = inheritLeadingComments(
+                            arrowToFunction(name, init),
+                            stmt
+                        );
                         out.push(
                             createRowFromFunction(
                                 name,
@@ -156,11 +246,14 @@ function processStatement(
                                 bt.isFunctionExpression(value) ||
                                 bt.isArrowFunctionExpression(value)
                             ) {
-                                const fnDecl = arrowToFunction(
-                                    name,
-                                    bt.isArrowFunctionExpression(value)
-                                        ? value
-                                        : value
+                                const fnDecl = inheritLeadingComments(
+                                    arrowToFunction(
+                                        name,
+                                        bt.isArrowFunctionExpression(value)
+                                            ? value
+                                            : value
+                                    ),
+                                    stmt
                                 );
                                 out.push(
                                     createRowFromFunction(
@@ -175,7 +268,10 @@ function processStatement(
                         }
                     }
                 } else if (bt.isFunctionExpression(right)) {
-                    const fnDecl = arrowToFunction('default', right);
+                    const fnDecl = inheritLeadingComments(
+                        arrowToFunction('default', right),
+                        stmt
+                    );
                     out.push(
                         createRowFromFunction(
                             'default',
@@ -186,7 +282,10 @@ function processStatement(
                         )
                     );
                 } else if (bt.isArrowFunctionExpression(right)) {
-                    const fnDecl = arrowToFunction('default', right);
+                    const fnDecl = inheritLeadingComments(
+                        arrowToFunction('default', right),
+                        stmt
+                    );
                     out.push(
                         createRowFromFunction(
                             'default',
@@ -212,9 +311,14 @@ function processStatement(
                         bt.isFunctionExpression(right) ||
                         bt.isArrowFunctionExpression(right)
                     ) {
-                        const fnDecl = arrowToFunction(
-                            name,
-                            bt.isArrowFunctionExpression(right) ? right : right
+                        const fnDecl = inheritLeadingComments(
+                            arrowToFunction(
+                                name,
+                                bt.isArrowFunctionExpression(right)
+                                    ? right
+                                    : right
+                            ),
+                            stmt
                         );
                         out.push(
                             createRowFromFunction(
@@ -236,13 +340,22 @@ function processStatement(
         if (bt.isFunctionDeclaration(decl)) {
             const name = decl.id?.name || 'default';
             out.push(
-                createRowFromFunction(name, decl, filePath, projectRoot, isJsx)
+                createRowFromFunction(
+                    name,
+                    inheritLeadingComments(decl, stmt),
+                    filePath,
+                    projectRoot,
+                    isJsx
+                )
             );
         } else if (bt.isClassDeclaration(decl)) {
             const name = decl.id?.name || 'default';
             out.push(createRowFromClass(name, decl, filePath, projectRoot));
         } else if (bt.isArrowFunctionExpression(decl)) {
-            const fnDecl = arrowToFunction('default', decl);
+            const fnDecl = inheritLeadingComments(
+                arrowToFunction('default', decl),
+                stmt
+            );
             out.push(
                 createRowFromFunction(
                     'default',
@@ -253,7 +366,10 @@ function processStatement(
                 )
             );
         } else if (bt.isFunctionExpression(decl)) {
-            const fnDecl = arrowToFunction('default', decl);
+            const fnDecl = inheritLeadingComments(
+                arrowToFunction('default', decl),
+                stmt
+            );
             out.push(
                 createRowFromFunction(
                     'default',
@@ -275,8 +391,8 @@ function scanAllDeclarations(
     filePath: string,
     isJsx: boolean,
     projectRoot: string
-): IndexedSymbolRow[] {
-    const out: IndexedSymbolRow[] = [];
+): IndexedSymbolRowOut[] {
+    const out: IndexedSymbolRowOut[] = [];
 
     // 函数声明: function foo() {}
     if (bt.isFunctionDeclaration(stmt)) {
@@ -355,29 +471,58 @@ function createRowFromFunction(
     filePath: string,
     projectRoot: string,
     isJsx: boolean
-): IndexedSymbolRow {
+): IndexedSymbolRowOut {
     const relPath = getRelativePathForDisplay(projectRoot, filePath);
-    const category = inferCategoryFromPath(filePath);
+    const category =
+        inferCategoryFromPath(filePath) || inferCategoryFromName(name);
+    const jsdoc = parseJsDocInfo(decl);
 
     // 检测是否有 JSX
     const hasJsx = isJsx || containsJsx(decl);
 
     // 判断类型：
     // 1. 有 JSX = component
-    // 2. 名字包含 selector = selector
+    // 2. 名字包含 use = hook
     // 3. 大写开头（JSX 组件约定）= component
-    // 4. 其他 = util
-    const type: SymbolType = hasJsx
-        ? 'component'
-        : name.toLowerCase().includes('selector')
-          ? 'selector'
-          : isJsx && /^[A-Z]/.test(name)
-            ? 'component'
-            : 'util';
+    // 4. 其他 = function
+    const type: SymbolType = name.toLowerCase().includes('use')
+        ? 'hook'
+        : isJsx || /^[A-Z]/.test(name)
+          ? 'component'
+          : 'function';
 
-    const params = decl.params
-        .filter((p): p is bt.Identifier => bt.isIdentifier(p))
-        .map((p) => p.name);
+    const params = decl.params.flatMap((param, index) => {
+        if (bt.isIdentifier(param)) {
+            return [makeParamPlaceholder(index)];
+        }
+        if (bt.isAssignmentPattern(param) && bt.isIdentifier(param.left)) {
+            return [makeParamPlaceholder(index)];
+        }
+        if (bt.isRestElement(param) && bt.isIdentifier(param.argument)) {
+            return [makeParamPlaceholder(index, true)];
+        }
+        if (bt.isObjectPattern(param)) {
+            return param.properties
+                .map((prop) => {
+                    if (
+                        bt.isObjectProperty(prop) &&
+                        bt.isIdentifier(prop.key)
+                    ) {
+                        return prop.key.name;
+                    }
+                    if (
+                        bt.isRestElement(prop) &&
+                        bt.isIdentifier(prop.argument)
+                    ) {
+                        return `...${prop.argument.name}`;
+                    }
+                    return null;
+                })
+                .filter((value): value is string => Boolean(value))
+                .sort();
+        }
+        return [makeParamPlaceholder(index)];
+    });
 
     const hooks = extractHooksFromBody(decl);
     const sideEffects = extractSideEffects(decl);
@@ -387,15 +532,20 @@ function createRowFromFunction(
         type,
         category,
         path: relPath,
-        description: null,
+        description: jsdoc.description,
         content: `function ${decl.id?.name || 'anonymous'}(${params.join(', ')}) { ... }`,
         meta: {
             kind: 'function',
             params,
-            returnType: getReturnType(decl),
+            ...(getReturnType(decl, jsdoc)
+                ? { returnType: getReturnType(decl, jsdoc) }
+                : {}),
             ...(hooks.length ? { hooks } : {}),
             ...(sideEffects.length ? { sideEffects } : {}),
         },
+        file_hash: '',
+        semantic_hash: '',
+        node: decl,
     };
 }
 
@@ -404,21 +554,26 @@ function createRowFromClass(
     _decl: bt.ClassDeclaration,
     filePath: string,
     projectRoot: string
-): IndexedSymbolRow {
+): IndexedSymbolRowOut {
     const relPath = getRelativePathForDisplay(projectRoot, filePath);
     const category = inferCategoryFromPath(filePath);
+    const jsdoc = parseJsDocInfo(_decl);
 
     // 大写开头的类视为组件
-    const type: SymbolType = /^[A-Z]/.test(name) ? 'component' : 'util';
+    const type: SymbolType = /^[A-Z]/.test(name) ? 'component' : 'function';
 
     return {
         name,
         type,
         category,
         path: relPath,
-        description: null,
+        description: jsdoc.description,
+        // content meta.kind 暂时废弃不用，
         content: null,
-        meta: { kind: 'class' },
+        meta: {},
+        file_hash: '',
+        semantic_hash: '',
+        node: _decl,
     };
 }
 
@@ -462,20 +617,24 @@ function containsJsx(node: bt.Node): boolean {
     return found;
 }
 
-function getReturnType(fn: bt.FunctionDeclaration): string | undefined {
-    if (!fn.returnType) return undefined;
-    const rt = fn.returnType;
-    if (bt.isTSTypeAnnotation(rt)) {
-        const inner = rt.typeAnnotation;
-        if (bt.isTSStringKeyword(inner)) return 'string';
-        if (bt.isTSNumberKeyword(inner)) return 'number';
-        if (bt.isTSBooleanKeyword(inner)) return 'boolean';
-        if (bt.isTSVoidKeyword(inner)) return 'void';
-        if (bt.isTSAnyKeyword(inner)) return 'any';
-        if (bt.isTSUnknownKeyword(inner)) return 'unknown';
-        if (bt.isTSNullKeyword(inner)) return 'null';
+function getReturnType(
+    fn: bt.FunctionDeclaration,
+    jsdoc?: JsDocInfo
+): string | undefined {
+    if (fn.returnType) {
+        const rt = fn.returnType;
+        if (bt.isTSTypeAnnotation(rt)) {
+            const inner = rt.typeAnnotation;
+            if (bt.isTSStringKeyword(inner)) return 'string';
+            if (bt.isTSNumberKeyword(inner)) return 'number';
+            if (bt.isTSBooleanKeyword(inner)) return 'boolean';
+            if (bt.isTSVoidKeyword(inner)) return 'void';
+            if (bt.isTSAnyKeyword(inner)) return 'any';
+            if (bt.isTSUnknownKeyword(inner)) return 'unknown';
+            if (bt.isTSNullKeyword(inner)) return 'null';
+        }
     }
-    return undefined;
+    return jsdoc?.returnType;
 }
 
 /** 副作用类型 */
@@ -534,16 +693,20 @@ function getNodeText(n: unknown): string {
         if (propNode && typeof propNode === 'object') {
             const propType = (propNode as Record<string, unknown>).type;
             if (propType === 'Identifier') {
-                prop = (propNode as Record<string, unknown>).name as string || '';
+                prop =
+                    ((propNode as Record<string, unknown>).name as string) ||
+                    '';
             } else if (propType === 'Literal') {
-                prop = String((propNode as Record<string, unknown>).value ?? '');
+                prop = String(
+                    (propNode as Record<string, unknown>).value ?? ''
+                );
             }
         }
         const computed = node.computed;
         return obj + (computed ? `[${prop}]` : `.${prop}`);
     }
     if (type === 'Identifier') {
-        return node.name as string || '';
+        return (node.name as string) || '';
     }
     if (type === 'Literal' || type === 'NullLiteral') {
         const val = node.value;
@@ -594,6 +757,14 @@ function extractSideEffects(fn: bt.FunctionDeclaration): SideEffectType[] {
             }
             if (calleeTextLower.includes('xmlhttprequest')) {
                 effects.add('network');
+            }
+            if (
+                bt.isMemberExpression(n.callee) &&
+                bt.isIdentifier(n.callee.property) &&
+                (n.callee.property.name === 'getBoundingClientRect' ||
+                    n.callee.property.name === 'getComputedStyle')
+            ) {
+                effects.add('dom');
             }
         }
 

@@ -5,7 +5,9 @@ import { rankSymbols } from '../services/ranking.js';
 
 export const searchByStructureInput = z.object({
     fields: z.array(z.string().min(1)).min(1),
-    type: z.enum(['component', 'util', 'selector', 'type']).optional(),
+    type: z
+        .enum(['component', 'function', 'hook', 'type', 'interface', 'class'])
+        .optional(),
     category: z.string().optional(),
     limit: z.number().int().min(1).max(100).optional().default(20),
     ranked: z.boolean().optional().default(true),
@@ -15,7 +17,10 @@ export function createSearchByStructureTool(repository: SymbolRepository) {
     return {
         name: 'search_by_structure',
         description:
-            '通过结构化字段（如 props/params/properties/hooks）搜索代码块，适用于 API 形态的查询。',
+            '按代码块的结构字段（props/params/hooks）检索，适合已知接口形态时使用。\n' +
+            '示例：需要一个接受 value、onChange、error 三个 prop 的输入组件 → fields: ["value", "onChange", "error"], type: "component"\n' +
+            '与 search_symbols 配合：先语义检索候选，再用本工具做 API 结构过滤以精确匹配。\n' +
+            '约束：当用户是在问“有没有可复用组件/帮我找组件”时，默认不要调用本工具；仅在用户明确要求二次验证时使用。',
         inputSchema: searchByStructureInput.shape,
         handler: async (input: z.infer<typeof searchByStructureInput>) => {
             const rows = await repository.searchByStructure(input.fields, {

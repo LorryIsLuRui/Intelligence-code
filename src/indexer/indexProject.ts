@@ -4,7 +4,9 @@
  */
 
 import fg from 'fast-glob';
-import { join, resolve } from 'node:path';
+import * as babelParser from '@babel/parser';
+import * as bt from '@babel/types';
+import { dirname, join, resolve } from 'node:path';
 import { Node, Project, SyntaxKind, type SourceFile } from 'ts-morph';
 import { readFileSync, existsSync } from 'node:fs';
 import type { SymbolType } from '../types/symbol.js';
@@ -18,20 +20,63 @@ import {
     getRelativePathForDisplay,
     hasJsxInNode,
     inferCategoryFromPath,
-    isSelectorLike,
+    isHookLike,
     isTsxFile,
     snippetForNode,
+    inferCategoryFromName,
 } from './heuristics.js';
 import { parseJsFile } from './babelParser.js';
+import { isParamPlaceholder } from './paramPlaceholder.js';
+import { computeFileHash, computeSemanticHash } from './tsAstNormalizer.js';
 
-/** 调用关系条目 */
-interface SymbolRef {
-    name: string;
-    path: string;
+const CALLERS_LIMIT = 20;
+const BABEL_PLUGINS = [
+    'jsx',
+    'typescript',
+    'classPrivateMethods',
+    'classPrivateProperties',
+    'decorators-legacy',
+    'doExpressions',
+    'exportDefaultFrom',
+    'functionBind',
+    'logicalAssignment',
+    'nullishCoalescingOperator',
+    'objectRestSpread',
+    'optionalChaining',
+    'optionalCatchBinding',
+] as const;
+
+function isCallerDebugEnabled(): boolean {
+    return /^(1|true|yes|on)$/i.test(process.env.DEBUG_CALLERS ?? '');
+}
+
+function getCallerDebugMatch(): string {
+    return (process.env.DEBUG_CALLERS_MATCH ?? '').trim().toLowerCase();
+}
+
+function shouldLogCallerDebug(
+    parts: Array<string | null | undefined>
+): boolean {
+    if (!isCallerDebugEnabled()) return false;
+    const match = getCallerDebugMatch();
+    if (!match) return true;
+    return parts.some((part) => part?.toLowerCase().includes(match));
+}
+
+function logCallerDebug(
+    stage: string,
+    payload: Record<string, unknown>,
+    parts: Array<string | null | undefined>
+): void {
+    if (!shouldLogCallerDebug(parts)) return;
+    console.error(`[callers.debug] ${stage} ${JSON.stringify(payload)}`);
 }
 
 /** 已收集的符号映射：key = "name|path"，用于快速查找 */
-type SymbolMap = Map<string, { name: string; path: string; exports: Set<string> }>;
+type SymbolMap = Map<
+    string,
+    { name: string; path: string; exports: Set<string> }
+>;
 
 /** 判断文件类型 */
 function isJsFile(filePath: string): boolean {
@@ -42,22 +87,16 @@ function isTsFile(filePath: string): boolean {
     return filePath.endsWith('.ts') || filePath.endsWith('.tsx');
 }
 
-/** 单条索引结果，对应 `symbols` 表一行（尚未含自增 id / usage_count）。 */
 export interface IndexedSymbolRow {
-    /** 导出代码块名（含 default 解析后的真实名） */
     name: string;
-    /** 设计文档中的技术类型：component / util / selector / type */
     type: SymbolType;
-    /** 由路径推断的业务子目录，可为空 */
     category: string | null;
-    /** 相对工程根的路径，入库与检索展示用 */
     path: string;
-    /** JSDoc 摘要，对应 `description` */
     description: string | null;
-    /** 声明源码片段，对应 `content` */
     content: string | null;
-    /** JSON 扩展字段，对应 `meta` 列 */
     meta: Record<string, unknown>;
+    semantic_hash?: string; // 代码语义模板哈希值
+    file_hash?: string; // 文件哈希值
 }
 
 /**
@@ -73,10 +112,13 @@ function mergeCallableMeta(
     const paramTypeFields = raw.paramTypeFields as string[] | undefined;
     const { params: _p, paramTypeFields: _f, ...rest } = raw;
     if (symbolType === 'component' && params?.length) {
-        const props = [
-            ...new Set([...(paramTypeFields ?? []), ...params]),
-        ].filter((name) => name.toLowerCase() !== 'props');
-        return { ...rest, props: props.length ? props : params };
+        const props = [...new Set([...(paramTypeFields ?? []), ...params])]
+            .filter(
+                (name) =>
+                    name.toLowerCase() !== 'props' && !isParamPlaceholder(name)
+            )
+            .sort();
+        return { ...rest, ...(props.length ? { props } : {}) };
     }
     return { ...rest, ...(params?.length ? { params } : {}) };
 }
@@ -111,7 +153,6 @@ function processDeclaration(
 ): IndexedSymbolRow | null {
     const filePath = sf.getFilePath();
     const relPath = getRelativePathForDisplay(projectRoot, filePath);
-    const category = inferCategoryFromPath(filePath);
     const name = resolveExportName(exportName, decl);
     const description = getLeadingDocDescription(decl) ?? null;
 
@@ -120,34 +161,53 @@ function processDeclaration(
         Node.isTypeAliasDeclaration(decl)
     ) {
         const meta = extractInterfaceOrTypeMeta(decl);
+        const type = Node.isInterfaceDeclaration(decl) ? 'interface' : 'type';
+        const [semantic_hash, stableStr] = computeSemanticHash({
+            name,
+            type,
+            description,
+            meta,
+            node: decl,
+        });
         return {
             name,
-            type: 'type',
-            category,
+            type,
+            category: '',
             path: relPath,
             description,
-            content: snippetForNode(decl),
+            content: stableStr,
             meta,
+            file_hash: computeFileHash(sf.getFullText()),
+            semantic_hash,
         };
     }
 
     if (Node.isFunctionDeclaration(decl)) {
         const jsx = isTsxFile(filePath) && hasJsxInNode(decl);
-        const type: SymbolType = jsx
-            ? 'component'
-            : isSelectorLike(filePath, name)
-              ? 'selector'
-              : 'util';
+        const type: SymbolType = isHookLike(name)
+            ? 'hook'
+            : jsx
+              ? 'component'
+              : 'function';
         const raw = extractMetaFromCallable(decl);
         const meta = mergeCallableMeta(type, raw);
+        const [semantic_hash, stableStr] = computeSemanticHash({
+            name,
+            type,
+            description,
+            meta,
+            node: decl,
+        });
         return {
             name,
             type,
-            category,
+            category: '',
             path: relPath,
             description,
-            content: snippetForNode(decl),
+            content: stableStr,
             meta,
+            semantic_hash,
+            file_hash: computeFileHash(sf.getFullText()),
         };
     }
 
@@ -171,34 +231,53 @@ function processDeclaration(
         if (!callable) return null;
 
         const jsx = isTsxFile(filePath) && hasJsxInNode(callable);
-        const type: SymbolType = jsx
-            ? 'component'
-            : isSelectorLike(filePath, name)
-              ? 'selector'
-              : 'util';
+        const type: SymbolType = isHookLike(name)
+            ? 'hook'
+            : jsx
+              ? 'component'
+              : 'function';
         const raw = extractMetaFromCallable(callable);
         const meta = mergeCallableMeta(type, raw);
+        const [semantic_hash, stableStr] = computeSemanticHash({
+            name,
+            type,
+            description,
+            meta,
+            node: callable,
+        });
         return {
             name,
             type,
-            category,
+            category: '',
             path: relPath,
             description,
-            content: snippetForNode(callable),
+            content: stableStr,
             meta,
+            semantic_hash,
+            file_hash: computeFileHash(sf.getFullText()),
         };
     }
 
     if (Node.isClassDeclaration(decl)) {
         // 轻量：仅将 class 记为 util（后续可扩展为带 JSX 的组件类）
+        const type = 'class';
+        const [semantic_hash, stableStr] = computeSemanticHash({
+            name,
+            type,
+            description,
+            meta: { kind: type },
+            node: decl,
+        });
         return {
             name,
-            type: 'util',
-            category,
+            type,
+            category: '',
             path: relPath,
             description,
-            content: snippetForNode(decl),
-            meta: { kind: 'class' },
+            content: stableStr,
+            meta: { kind: type },
+            semantic_hash,
+            file_hash: computeFileHash(sf.getFullText()),
         };
     }
 
@@ -214,7 +293,7 @@ export interface IndexProjectOptions {
     ignore?: string[];
 }
 
-const DEFAULT_IGNORE = [
+export const DEFAULT_IGNORE = [
     '**/node_modules/**',
     '**/dist/**',
     '**/.git/**',
@@ -229,6 +308,203 @@ const DEFAULT_IGNORE = [
     '**/dist-srv/**',
     '**/.turbo/**',
 ];
+
+function resolveImportedSourceFile(
+    currentFilePath: string,
+    moduleSpecifier: string
+): string | null {
+    if (!moduleSpecifier.startsWith('.')) return null;
+
+    const base = resolve(dirname(currentFilePath), moduleSpecifier);
+    const candidates = [
+        base,
+        `${base}.ts`,
+        `${base}.tsx`,
+        `${base}.js`,
+        `${base}.jsx`,
+        join(base, 'index.ts'),
+        join(base, 'index.tsx'),
+        join(base, 'index.js'),
+        join(base, 'index.jsx'),
+    ];
+
+    for (const candidate of candidates) {
+        if (existsSync(candidate)) return candidate;
+    }
+    return null;
+}
+
+function applyRelationMaps(
+    rows: IndexedSymbolRow[],
+    callersMap: Map<string, Set<string>>,
+    calleesMap: Map<string, Set<string>>
+): void {
+    for (const row of rows) {
+        const key = `${row.name}|${row.path}`;
+        const callers = callersMap.get(key);
+        const callees = calleesMap.get(key);
+
+        if (callers?.size) {
+            row.meta.callers = [...callers].slice(0, CALLERS_LIMIT).map((s) => {
+                const [name, ...pathParts] = s.split('|');
+                return { name, path: pathParts.join('|') };
+            });
+        }
+        if (callees?.size) {
+            row.meta.callees = [...callees].slice(0, CALLERS_LIMIT).map((s) => {
+                const [name, ...pathParts] = s.split('|');
+                return { name, path: pathParts.join('|') };
+            });
+        }
+    }
+}
+
+function analyzeJsRelations(
+    jsFiles: string[],
+    symbolMap: SymbolMap,
+    projectRoot: string,
+    rows: IndexedSymbolRow[]
+): void {
+    const callersMap = new Map<string, Set<string>>();
+    const calleesMap = new Map<string, Set<string>>();
+
+    for (const filePath of jsFiles) {
+        const relPath = getRelativePathForDisplay(projectRoot, filePath);
+        const callerRows = rows.filter((row) => row.path === relPath);
+        if (callerRows.length === 0) continue;
+
+        logCallerDebug(
+            'js-file-start',
+            {
+                filePath,
+                relPath,
+                callerRows: callerRows.map((row) => row.name),
+            },
+            [filePath, relPath, ...callerRows.map((row) => row.name)]
+        );
+
+        let ast: bt.File;
+        try {
+            ast = babelParser.parse(readFileSync(filePath, 'utf-8'), {
+                sourceType: 'module',
+                plugins: [...BABEL_PLUGINS],
+                strictMode: false,
+            });
+        } catch (error) {
+            console.error(
+                `[analyzeJsRelations] Failed to parse ${filePath}:`,
+                error
+            );
+            continue;
+        }
+
+        for (const stmt of ast.program.body) {
+            if (!bt.isImportDeclaration(stmt)) continue;
+
+            const moduleSpecifier = stmt.source.value;
+            if (typeof moduleSpecifier !== 'string') continue;
+
+            const importedFile = resolveImportedSourceFile(
+                filePath,
+                moduleSpecifier
+            );
+            logCallerDebug(
+                'js-import-resolve',
+                {
+                    from: relPath,
+                    moduleSpecifier,
+                    importedFile,
+                },
+                [relPath, moduleSpecifier, importedFile]
+            );
+            if (!importedFile) continue;
+
+            const importedRelPath = getRelativePathForDisplay(
+                projectRoot,
+                importedFile
+            );
+            const importedNames = stmt.specifiers
+                .map((spec) => {
+                    if (bt.isImportSpecifier(spec)) {
+                        return bt.isIdentifier(spec.imported)
+                            ? spec.imported.name
+                            : spec.imported.value;
+                    }
+                    if (bt.isImportDefaultSpecifier(spec)) {
+                        return spec.local.name;
+                    }
+                    return null;
+                })
+                .filter((name): name is string => Boolean(name));
+
+            logCallerDebug(
+                'js-import-specifiers',
+                {
+                    from: relPath,
+                    moduleSpecifier,
+                    importedRelPath,
+                    importedNames,
+                },
+                [relPath, moduleSpecifier, importedRelPath, ...importedNames]
+            );
+
+            for (const callerRow of callerRows) {
+                const callerKey = `${callerRow.name}|${callerRow.path}`;
+                for (const importedName of importedNames) {
+                    const targetKey = `${importedName}|${importedRelPath}`;
+                    const target = symbolMap.get(targetKey);
+                    logCallerDebug(
+                        'js-import-target',
+                        {
+                            callerKey,
+                            targetKey,
+                            hit: Boolean(target),
+                            availableKeysInFile: [...symbolMap.keys()].filter(
+                                (key) => key.endsWith(`|${importedRelPath}`)
+                            ),
+                        },
+                        [callerKey, targetKey, importedRelPath, importedName]
+                    );
+                    if (!target) continue;
+
+                    const calleeSet =
+                        calleesMap.get(callerKey) || new Set<string>();
+                    calleeSet.add(`${target.name}|${target.path}`);
+                    calleesMap.set(callerKey, calleeSet);
+
+                    const callerSet =
+                        callersMap.get(`${target.name}|${target.path}`) ||
+                        new Set<string>();
+                    callerSet.add(callerKey);
+                    callersMap.set(`${target.name}|${target.path}`, callerSet);
+
+                    logCallerDebug(
+                        'js-link-added',
+                        {
+                            callerKey,
+                            calleeKey: `${target.name}|${target.path}`,
+                        },
+                        [callerKey, target.name, target.path]
+                    );
+                }
+            }
+        }
+    }
+
+    applyRelationMaps(rows, callersMap, calleesMap);
+
+    for (const row of rows) {
+        logCallerDebug(
+            'js-row-final',
+            {
+                row: `${row.name}|${row.path}`,
+                callers: row.meta.callers ?? [],
+                callees: row.meta.callees ?? [],
+            },
+            [row.name, row.path]
+        );
+    }
+}
 
 /**
  * 按 glob 收集文件，用 ts-morph 加载并遍历每个文件的导出，生成全部代码块行。
@@ -276,8 +552,28 @@ export async function indexProject(
         project.addSourceFilesAtPaths(tsFiles);
 
         for (const sf of project.getSourceFiles()) {
-            const relPath = getRelativePathForDisplay(projectRoot, sf.getFilePath());
+            const relPath = getRelativePathForDisplay(
+                projectRoot,
+                sf.getFilePath()
+            );
             const exported = sf.getExportedDeclarations();
+            // 只检索export的代码，减少噪音
+            // 如果要检索未export的，需要考虑
+            /**
+             *  类型一：真正的内部实现，不应该复用
+                function _buildSqlFragment() {}     // 和模块强耦合，外部用不了
+                const __validateInternal = () => {} // 私有约定（下划线前缀）
+                → 索引了也没用，反而是噪音
+
+                类型二：工具函数，只是作者忘了 export / 懒得 export
+                function debounce(fn, ms) {}        // 通用，完全可以复用
+                function formatCurrency(n) {}       // 通用，其他地方也需要
+                → 索引有价值，还能反向提示"这个应该被 export"
+
+                类型三：文件内共享但跨文件无意义
+                function getLocalConfig() {}        // 依赖闭包变量，移出去就坏了
+                → 索引意义不大
+             */
             for (const [exportName, decls] of exported) {
                 for (const decl of decls) {
                     const row = processDeclaration(
@@ -291,9 +587,21 @@ export async function indexProject(
                         // 建立符号映射
                         const key = `${row.name}|${row.path}`;
                         if (!symbolMap.has(key)) {
-                            symbolMap.set(key, { name: row.name, path: row.path, exports: new Set() });
+                            symbolMap.set(key, {
+                                name: row.name,
+                                path: row.path,
+                                exports: new Set(),
+                            });
                         }
                         symbolMap.get(key)!.exports.add(exportName);
+                        logCallerDebug(
+                            'symbol-map-add-ts',
+                            {
+                                key,
+                                exportName,
+                            },
+                            [row.name, row.path, exportName]
+                        );
                     }
                 }
             }
@@ -310,9 +618,21 @@ export async function indexProject(
             for (const row of rows) {
                 const key = `${row.name}|${row.path}`;
                 if (!symbolMap.has(key)) {
-                    symbolMap.set(key, { name: row.name, path: row.path, exports: new Set() });
+                    symbolMap.set(key, {
+                        name: row.name,
+                        path: row.path,
+                        exports: new Set(),
+                    });
                 }
                 symbolMap.get(key)!.exports.add(row.name);
+                logCallerDebug(
+                    'symbol-map-add-js',
+                    {
+                        key,
+                        exportName: row.name,
+                    },
+                    [row.name, row.path]
+                );
             }
         } catch (e) {
             console.error(`[indexProject] Failed to parse ${file}:`, e);
@@ -330,6 +650,10 @@ export async function indexProject(
         analyzeRelations(project, symbolMap, projectRoot, out);
     }
 
+    if (jsFiles.length > 0) {
+        analyzeJsRelations(jsFiles, symbolMap, projectRoot, out);
+    }
+
     return out;
 }
 
@@ -342,7 +666,6 @@ function analyzeRelations(
     projectRoot: string,
     rows: IndexedSymbolRow[]
 ): void {
-    // 构造快速查找：exportName -> [ {name, path} ]
     const exportToSymbol = new Map<string, { name: string; path: string }[]>();
     for (const [key, value] of symbolMap) {
         for (const exp of value.exports) {
@@ -352,76 +675,112 @@ function analyzeRelations(
         }
     }
 
-    // 收集所有 callers 和 callees
-    const callersMap = new Map<string, Set<SymbolRef>>(); // key = "name|path" -> set of callers
-    const calleesMap = new Map<string, Set<SymbolRef>>(); // key = "name|path" -> set of callees
+    const callersMap = new Map<string, Set<string>>();
+    const calleesMap = new Map<string, Set<string>>();
 
     for (const sf of project.getSourceFiles()) {
         const filePath = sf.getFilePath();
         const relPath = getRelativePathForDisplay(projectRoot, filePath);
-
-        // 获取当前文件导出的符号
         const exported = sf.getExportedDeclarations();
-        const fileExportNames = new Set<string>();
-        for (const [name, decls] of exported) {
-            fileExportNames.add(name);
-        }
 
-        // 遍历 AST 查找调用
         sf.forEachDescendant((node) => {
-            // 1. 函数调用
+            // 函数调用
             if (Node.isCallExpression(node)) {
                 const expr = node.getExpression();
                 const name = Node.isIdentifier(expr) ? expr.getText() : null;
                 if (name && exportToSymbol.has(name)) {
                     const targets = exportToSymbol.get(name)!;
-                    // 当前文件是谁在调用
                     for (const [expName, decls] of exported) {
-                        for (const decl of decls) {
+                        for (const _decl of decls) {
                             const callerKey = `${expName}|${relPath}`;
                             for (const target of targets) {
                                 // callees: 我调用了谁
-                                const calleeSet = calleesMap.get(callerKey) || new Set();
-                                calleeSet.add({ name: target.name, path: target.path });
+                                const calleeSet =
+                                    calleesMap.get(callerKey) ||
+                                    new Set<string>();
+                                calleeSet.add(`${target.name}|${target.path}`); // ✅ 字符串天然去重
                                 calleesMap.set(callerKey, calleeSet);
 
-                                // callers: 谁调用了我
-                                const callerSet = callersMap.get(`${target.name}|${target.path}`) || new Set();
-                                callerSet.add({ name: expName, path: relPath });
-                                callersMap.set(`${target.name}|${target.path}`, callerSet);
+                                const callerSet =
+                                    callersMap.get(
+                                        `${target.name}|${target.path}`
+                                    ) || new Set<string>();
+                                callerSet.add(`${expName}|${relPath}`);
+                                callersMap.set(
+                                    `${target.name}|${target.path}`,
+                                    callerSet
+                                );
                             }
                         }
                     }
                 }
             }
 
-            // 2. Import 导入
+            // Import 导入关系（含 import type）
             if (Node.isImportDeclaration(node)) {
-                const moduleSpec = node.getModuleSpecifier().getText();
-                // 简单处理：只处理从 ./ 或 ../ 开始的相对导入
-                if (moduleSpec.startsWith("'.") || moduleSpec.startsWith('".')) {
-                    const importPath = moduleSpec.slice(1, -1); // 去掉引号
-                    // 尝试匹配已索引的符号
-                    // 这里简化处理，暂不展开
+                // 1. 解析被导入文件的路径
+                const importedSf = node.getModuleSpecifierSourceFile();
+                if (!importedSf) return; // 无法解析（第三方包等）跳过
+
+                const importedRelPath = getRelativePathForDisplay(
+                    projectRoot,
+                    importedSf.getFilePath()
+                );
+
+                // 2. 收集本条 import 引入了哪些具名符号
+                const namedBindings = node.getNamedImports(); // { SymbolRepository }
+                const defaultImport = node.getDefaultImport(); // import Foo from ...
+
+                const importedNames: string[] = [
+                    ...namedBindings.map((n) => n.getName()),
+                    ...(defaultImport ? [defaultImport.getText()] : []),
+                ];
+
+                if (importedNames.length === 0) return;
+
+                // 3. 当前文件的所有导出符号作为 caller
+                for (const [expName] of exported) {
+                    const callerKey = `${expName}|${relPath}`;
+
+                    for (const importedName of importedNames) {
+                        // 4. 在 symbolMap 里找到被导入符号对应的 row
+                        //    key 格式：`name|path`，name 是 resolveExportName 后的真实名
+                        //    exportToSymbol 里存的是 exportName（可能是 'default'），
+                        //    所以同时按 importedName 和路径在 symbolMap 里直接查
+                        const targetKey = `${importedName}|${importedRelPath}`;
+                        const target = symbolMap.get(targetKey);
+
+                        if (!target) continue;
+
+                        // callee：当前文件的导出符号引用了 target
+                        const calleeSet =
+                            calleesMap.get(callerKey) || new Set<string>();
+                        calleeSet.add(`${target.name}|${target.path}`);
+                        calleesMap.set(callerKey, calleeSet);
+
+                        const callerRefKey = `${target.name}|${target.path}`;
+                        const callerSet =
+                            callersMap.get(callerRefKey) || new Set<string>();
+                        callerSet.add(`${expName}|${relPath}`);
+                        callersMap.set(callerRefKey, callerSet);
+                    }
                 }
             }
         });
     }
 
-    // 写入 rows 的 meta
-    for (const row of rows) {
-        const key = `${row.name}|${row.path}`;
-        const callers = callersMap.get(key);
-        const callees = calleesMap.get(key);
+    applyRelationMaps(rows, callersMap, calleesMap);
 
-        if (callers && callers.size > 0) {
-            row.meta = row.meta || {};
-            row.meta.callers = [...callers].slice(0, 20); // 限制数量
-        }
-        if (callees && callees.size > 0) {
-            row.meta = row.meta || {};
-            row.meta.callees = [...callees].slice(0, 20);
-        }
+    for (const row of rows) {
+        logCallerDebug(
+            'ts-row-final',
+            {
+                row: `${row.name}|${row.path}`,
+                callers: row.meta.callers ?? [],
+                callees: row.meta.callees ?? [],
+            },
+            [row.name, row.path]
+        );
     }
 
     console.error(`[analyzeRelations] processed ${rows.length} symbols`);

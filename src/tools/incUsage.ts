@@ -10,7 +10,9 @@ export function createIncUsageTool(repository: SymbolRepository) {
     return {
         name: 'inc_usage',
         description:
-            '当开发者采纳了某个推荐代码块时，调用此工具记录。usage_count 会 +1，用于后续排序优化。',
+            '在用户明确确认"采纳推荐"后调用，记录复用行为用于排序优化（usage_count +1）。\n' +
+            '注意：仅在用户主动确认采纳时调用，不要在推荐后自动调用。\n' +
+            'symbolId 从 search_symbols 或 search_by_structure 返回结果的 id 字段获取。',
         inputSchema: incUsageInput.shape,
         handler: async (input: z.infer<typeof incUsageInput>) => {
             const success = await repository.incUsage(input.symbolId);
@@ -20,7 +22,10 @@ export function createIncUsageTool(repository: SymbolRepository) {
                         {
                             type: 'text' as const,
                             text: JSON.stringify(
-                                { error: '未找到该代码块', symbolId: input.symbolId },
+                                {
+                                    error: '未找到该代码块',
+                                    symbolId: input.symbolId,
+                                },
                                 null,
                                 2
                             ),
@@ -34,7 +39,11 @@ export function createIncUsageTool(repository: SymbolRepository) {
                     {
                         type: 'text' as const,
                         text: JSON.stringify(
-                            { ok: true, symbolId: input.symbolId, message: 'usage_count 已 +1' },
+                            {
+                                ok: true,
+                                symbolId: input.symbolId,
+                                message: 'usage_count 已 +1',
+                            },
                             null,
                             2
                         ),

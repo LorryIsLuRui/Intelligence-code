@@ -1,15 +1,22 @@
-# Code Intelligence MCP (Minimal)
+# Code Intelligence MCP
 
 - MCP Server（stdio）
 - Tool: `search_symbols`
 - Tool: `get_symbol_detail`
 - Tool: `search_by_structure`
-- Tool: `reindex`
 - Tool: `recommend_component`
+- Tool: `reindex`
 - Tool: `incUsage`
 - Prompt: `reusable-code-advisor`
-- MySQL Repository（可选启用）
 - Cursor Skill：`reusable-code-advisor`（`.cursor/skills/reusable-code-advisor/`，
+
+## 开发
+
+```
+    1. npm run dev:mcp 启动mcp  server
+    2. npm run embedding:dev 启动本地python环境
+    3. npm run worker:embedding 启动worker队列
+```
 
 ## 1) 配置mcp servers
 
@@ -26,11 +33,15 @@
 
 ## 2)配置流水线
 
-```
-    - uses: lorrylurui/code-intelligence-check@v1
+```yml
+    - uses: LorryIsLuRui/code-intelligence-ci-index@v1
+    with:
+        symbols-table: ${{ inputs.symbols-table }}
 ```
 
 ## 3) 项目根目录环境变量
 
+<!-- 最小配置 1.表名 2.需要检索的文件路径和类型 -->
+
 MYSQL\*SYMBOLS_TABLE=frontend_collections_symbols
-INDEX_GLOB=interview-code-collection/\*\*/\_.{js,jsx,ts,tsx}
+INDEX_GLOB=xxx/\*\*/\_.{js,jsx,ts,tsx}

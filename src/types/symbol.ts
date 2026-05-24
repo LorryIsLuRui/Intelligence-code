@@ -1,10 +1,16 @@
-export type SymbolType = 'component' | 'util' | 'selector' | 'type';
+export type SymbolType =
+    | 'component'
+    | 'function'
+    | 'type'
+    | 'class'
+    | 'interface'
+    | 'hook';
 
 export interface CodeSymbol {
     id: number;
     name: string;
-    type: SymbolType; // component/util{包括class}/selector/type{type和interface都是这个类型，区别在meta里}
-    category: string | null;
+    type: SymbolType; // 结构类型，selector严格来说属于函数 component/function/class/type/interface/hook
+    category: string | null; // 语义类型：来自路径推断、embedding、llm fallback
     path: string;
     description: string | null;
     content: string | null;

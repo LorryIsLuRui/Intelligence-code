@@ -1,95 +1,246 @@
-import { resolve } from 'node:path';
-import { env, loadProjectDotenv } from '../config/env.js';
-import { getMySqlPool } from '../db/mysql.js';
-import { indexedRowToEmbedText } from '../indexer/embedText.js';
-import { indexProject } from '../indexer/indexProject.js';
+import { resolve, join } from 'node:path';
+import { readFileSync } from 'node:fs';
+import type { PoolClient } from 'pg';
+import fg from 'fast-glob';
+import { env } from '../config/env.js';
+import { getPool } from '../db/postgres.js';
+import { getAllTableSQLs } from '../db/schema.js';
+import { indexProject, DEFAULT_IGNORE } from '../indexer/indexProject.js';
 import { upsertSymbols } from '../indexer/persistSymbols.js';
+import { computeFileHash } from '../indexer/tsAstNormalizer.js';
+import { getRelativePathForDisplay } from '../indexer/heuristics.js';
 import {
-    createEmbeddingClient,
-    embedAll,
-} from '../services/embeddingClient.js';
+    enqueueEmbeddingBatch,
+    closeEmbeddingQueue,
+} from '../services/embeddingQueue.js';
+import { markRemovedSymbolsOffline } from './reconcileIndexedSymbols.js';
+import { SYMBOL_STATUS } from '../config/symbolStatus.js';
 
 export interface ReindexOptions {
     projectRoot?: string;
     globPatterns?: string[];
     ignore?: string[];
     dryRun?: boolean;
+    /**
+     * 强制全量重建模式。
+     * 用于：embedding 模型升级、语义模板逻辑变更、清理漂移/僵尸数据。
+     * 效果：跳过 file_hash 过滤（全量解析），清空已有 embedding，全部重新入队。
+     * 注意：此时不应复用任何缓存，file_hash 同样无效。
+     */
+    forceRebuild?: boolean;
 }
 
 export interface ReindexResult {
     projectRoot: string;
     extractedCount: number;
+    /** file_hash 未变，跳过 AST 解析的文件数 */
+    skippedFiles: number;
+    /** 入队给 worker 处理 embedding 的 semantic_hash 数（去重后） */
+    enqueuedCount: number;
     upserted: boolean;
-    /** Phase 5：是否尝试写入了向量（需 EMBEDDING_SERVICE_URL + 列存在） */
-    embeddingsComputed: boolean;
+}
+
+function isCallerDebugEnabled(): boolean {
+    return /^(1|true|yes|on)$/i.test(process.env.DEBUG_CALLERS ?? '');
+}
+
+function getCallerDebugMatch(): string {
+    return (process.env.DEBUG_CALLERS_MATCH ?? '').trim().toLowerCase();
+}
+
+function debugMatchedFiles(
+    stage: string,
+    files: string[],
+    projectRoot: string
+): void {
+    if (!isCallerDebugEnabled()) return;
+    const match = getCallerDebugMatch();
+    const normalized = files.map((file) =>
+        getRelativePathForDisplay(projectRoot, file)
+    );
+    const matched = match
+        ? normalized.filter((file) => file.toLowerCase().includes(match))
+        : normalized;
+
+    console.error(
+        `[callers.debug] ${stage} ${JSON.stringify({
+            match: match || null,
+            count: matched.length,
+            files: matched,
+        })}`
+    );
 }
 
 export async function runReindex(
     options: ReindexOptions = {}
 ): Promise<ReindexResult> {
     const projectRoot = resolve(options.projectRoot ?? process.cwd());
-    const { dryRun = false } = options;
+    const { dryRun = false, forceRebuild = false } = options;
 
-    // 1️ 加载第三方 .env：只覆盖未定义的变量 → 保留 MCP Server 自身配置
-    loadProjectDotenv(projectRoot);
-
-    // 2️ 打印生效的环境变量（便于调试）
     console.error(
-        `[reindex] projectRoot=${projectRoot}, dryRun=${dryRun}, ` +
-            `MYSQL_ENABLED=${process.env.MYSQL_ENABLED}, ` +
-            `MYSQL_HOST=${process.env.MYSQL_HOST}`
+        `[reindex] projectRoot=${projectRoot}, dryRun=${dryRun}, forceRebuild=${forceRebuild}, PG_URL=${process.env.PG_URL ? '(set)' : '(not set)'}, SYMBOLS_TABLE=${env.symbolsTable}`
     );
 
-    // 3️⃣ 只有需要写入数据库时才检查 MySQL 并建立连接
-    // 注意：直接检查 process.env，因为 env.mysqlEnabled 是模块加载时计算的，不会反映 loadProjectDotenv 的更新
-    const mysqlEnabled = process.env.MYSQL_ENABLED === 'true';
-    const embeddingServiceUrl = process.env.EMBEDDING_SERVICE_URL;
-    let pool: Awaited<ReturnType<typeof getMySqlPool>> | null = null;
+    let pool: ReturnType<typeof getPool> | null = null;
     if (!dryRun) {
-        if (!mysqlEnabled) {
-            throw new Error(
-                `最新！${JSON.stringify(process.env)}执行 reindex 写入数据库需要 MYSQL_ENABLED=true。' +
-                    '第三方项目可在 .env 中配置此变量（未配置则使用 MCP Server 本地配置）。`
-            );
+        pool = getPool();
+        await pool.query('SELECT 1');
+        console.error('[reindex] PostgreSQL connection successful');
+
+        // 确保 extension + table + indexes 存在（幂等，多租户表名安全）
+        for (const sql of getAllTableSQLs()) {
+            await pool.query(sql);
         }
-        pool = getMySqlPool();
-        await pool!.query('SELECT 1'); // 测试连接
-        console.error('[reindex] MySQL connection successful');
+        console.error(`[reindex] schema ready: ${env.symbolsTable}`);
     }
 
+    // ─── 1. glob 解析出全量文件列表（绝对路径）──────────────────────────
+    const ignore = [...DEFAULT_IGNORE, ...(options.ignore ?? [])];
+    const patterns = (options.globPatterns ?? ['src/**/*.{ts,tsx}']).map((p) =>
+        p.startsWith('/') ? p : join(projectRoot, p).replace(/\\/g, '/')
+    );
+    const allFiles = await fg(patterns, {
+        absolute: true,
+        ignore,
+        onlyFiles: true,
+        dot: false,
+    });
+    console.error(`[reindex] glob found ${allFiles.length} file(s)`);
+    debugMatchedFiles('reindex-all-files', allFiles, projectRoot);
+
+    // ─── 2. file_hash 过滤：跳过 AST 未变的文件（CPU 优化）────────────────
+    // forceRebuild 时跳过此过滤，file_hash 不可复用（模板/模型变更时相同文件产出不同 content）
+    let filesToIndex = allFiles;
+    let skippedFiles = 0;
+
+    if (!forceRebuild && pool && allFiles.length > 0) {
+        // 计算所有文件当前 hash
+        const currentFileHashes = new Map<string, string>(); // relPath → hash
+        for (const absPath of allFiles) {
+            const content = readFileSync(absPath, 'utf-8');
+            const relPath = getRelativePathForDisplay(projectRoot, absPath);
+            currentFileHashes.set(relPath, computeFileHash(content));
+        }
+
+        // 一次性批量查 DB 已有的 file_hash
+        const relPaths = [...currentFileHashes.keys()];
+        const { rows: dbRows } = await pool!.query<{
+            path: string;
+            file_hash: string;
+        }>(
+            `SELECT DISTINCT path, file_hash FROM ${env.symbolsTable}
+             WHERE path = ANY($1) AND file_hash IS NOT NULL`,
+            [relPaths]
+        );
+        const dbFileHash = new Map<string, string>(
+            dbRows.map((r) => [r.path, r.file_hash])
+        );
+
+        filesToIndex = allFiles.filter((absPath) => {
+            const relPath = getRelativePathForDisplay(projectRoot, absPath);
+            return currentFileHashes.get(relPath) !== dbFileHash.get(relPath);
+        });
+        skippedFiles = allFiles.length - filesToIndex.length;
+        console.error(
+            `[reindex] file_hash: ${skippedFiles} unchanged (skipped), ${filesToIndex.length} changed (to parse)`
+        );
+        const skippedAbsFiles = allFiles.filter(
+            (absPath) => !filesToIndex.includes(absPath)
+        );
+        debugMatchedFiles('reindex-files-to-parse', filesToIndex, projectRoot);
+        debugMatchedFiles(
+            'reindex-files-skipped',
+            skippedAbsFiles,
+            projectRoot
+        );
+    } else if (forceRebuild) {
+        console.error(
+            `[reindex] forceRebuild=true, skipping file_hash filter — parsing all ${allFiles.length} file(s)`
+        );
+        debugMatchedFiles('reindex-files-to-parse', filesToIndex, projectRoot);
+    }
+
+    if (filesToIndex.length === 0) {
+        console.error('[reindex] all files unchanged, nothing to do');
+        return {
+            projectRoot,
+            extractedCount: 0,
+            skippedFiles,
+            enqueuedCount: 0,
+            upserted: false,
+        };
+    }
+
+    // ─── 3. 只对变更文件做 AST 解析 ──────────────────────────────────
     const rows = await indexProject({
         projectRoot,
-        globPatterns: options.globPatterns,
-        ignore: options.ignore,
+        globPatterns: filesToIndex,
     });
     console.error(
-        `[reindex] extracted ${rows.length} symbol(s) from ${projectRoot}`
+        `[reindex] extracted ${rows.length} symbol(s) from ${filesToIndex.length} changed file(s)`
     );
 
-    let embeddingsComputed = false;
-    let embeddingPayload: (number[] | null)[] | undefined;
+    // ─── 4. 写库（全部 pending）→ 入队，worker 异步处理 embedding + category ──
+    const nullPayload = rows.map(() => null as number[] | null);
+    const pendingHashes = [
+        ...new Set(
+            rows.map((r) => r.semantic_hash).filter(Boolean) as string[]
+        ),
+    ];
+    const relPathsForIndexedFiles = filesToIndex.map((file) =>
+        getRelativePathForDisplay(projectRoot, file)
+    );
 
-    if (!options.dryRun && rows.length > 0 && embeddingServiceUrl) {
+    if (!dryRun) {
+        const client = await pool!.connect();
         try {
-            const client = createEmbeddingClient(embeddingServiceUrl);
-            const texts = rows.map(indexedRowToEmbedText);
-            const vecs = await embedAll(client, texts);
-            embeddingPayload = vecs;
-            embeddingsComputed = true;
-        } catch (err) {
-            console.error('[reindex] embedding skipped (service error):', err);
-            embeddingPayload = rows.map(() => null);
-        }
-    }
+            await client.query('BEGIN');
 
-    if (!options.dryRun) {
-        await upsertSymbols(pool!, rows, embeddingPayload);
+            // forceRebuild：先清空 DB 中已有的 embedding，使 worker cache check 必然 miss；
+            // file_hash 一并重置，确保本次重建与后续普通 reindex 都不会复用旧缓存判定。
+            if (forceRebuild && pendingHashes.length > 0) {
+                await client.query(
+                    `UPDATE ${env.symbolsTable}
+                     SET embedding = NULL, status = $1::smallint, file_hash = NULL
+                     WHERE semantic_hash = ANY($2)`,
+                    [SYMBOL_STATUS.PENDING, pendingHashes]
+                );
+                console.error(
+                    `[reindex] forceRebuild: cleared embeddings + file_hash for ${pendingHashes.length} semantic_hash(es)`
+                );
+            }
+            // 能复用 status=online
+            // 结构变了，不能复用 status=pending embedding=null
+            await upsertSymbols(client, rows, nullPayload);
+            // 处理 file内 symbol下线 或 整个file所有symbols下线
+            await markRemovedSymbolsOffline(
+                client,
+                relPathsForIndexedFiles,
+                rows
+            );
+
+            await client.query('COMMIT');
+        } catch (error) {
+            await client.query('ROLLBACK');
+            throw error;
+        } finally {
+            client.release();
+        }
+
+        if (pendingHashes.length > 0) {
+            await enqueueEmbeddingBatch(pendingHashes, env.symbolsTable);
+            console.error(
+                `[reindex] enqueued ${pendingHashes.length} semantic_hash(es) → worker will handle embedding asynchronously`
+            );
+        }
+        await closeEmbeddingQueue();
     }
 
     return {
         projectRoot,
         extractedCount: rows.length,
-        upserted: !options.dryRun,
-        embeddingsComputed,
+        skippedFiles,
+        enqueuedCount: pendingHashes.length,
+        upserted: !dryRun,
     };
 }
