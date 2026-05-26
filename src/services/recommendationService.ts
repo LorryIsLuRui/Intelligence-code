@@ -38,6 +38,7 @@ import {
     MIN_SEMANTIC_TEXT_MATCH_SCORE,
     REQUIRED_FIELD_FALLBACK_MIN_SCORE,
 } from '../config/tuning.js';
+import { NOISE_PATTERNS, buildSynonymVariant } from '../config/queryRewrite.js';
 
 /** 跳过原因标识 */
 const SKIPPED_REASON = {
@@ -64,8 +65,8 @@ const RECOMMENDATION_MESSAGE = {
 
 /** 详情补查的 top-k 条数 */
 const ENRICH_TOP_K = 3;
-/** 最多取查询变体数量 */
-const MAX_QUERY_VARIANTS = 2;
+/** 最多取查询变体数量（原始 + 清洗 + 同义词扩展） */
+const MAX_QUERY_VARIANTS = 3;
 /** 结构/语义搜索 limit 倍数 */
 const STRUCTURE_LIMIT_MULTIPLIER = 4;
 /** 结构/语义搜索 limit 最小值 */
@@ -133,33 +134,34 @@ function uniqueStrings(values: string[] = []): string[] {
     return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
 }
 
-const QUERY_REWRITE_PATTERNS = [
-    /^帮我找(找)?(一个|一下)?/g,
-    /^有没有(现成的)?/g,
-    /^请推荐(一个|一下)?/g,
-    /可复用/g,
-    /现成的/g,
-    /封装好的/g,
-    /(组件|函数|hook|工具|util)(实现)?/gi,
-];
-
 /**
- * 对原始查询进行清洗和变体生成，去掉无意义的词，提炼更核心的查询内容
+ * 对原始查询进行清洗和变体生成：
+ * 1. 噪音词清洗（去掉口语化前缀、无意义词）
+ * 2. 同义词扩展（中英互转、别名替换）
+ * 生成最多 MAX_QUERY_VARIANTS 个去重变体，按从精确到宽泛排序。
  */
 function buildQueryVariants(rawQuery: string): string[] {
     const base = rawQuery.trim();
     if (!base) return [];
 
-    let rewritten = base;
-    for (const pattern of QUERY_REWRITE_PATTERNS) {
-        rewritten = rewritten.replace(pattern, ' ');
+    // Step 1: 噪音词清洗
+    let cleaned = base;
+    for (const pattern of NOISE_PATTERNS) {
+        cleaned = cleaned.replace(pattern, ' ');
     }
-    rewritten = rewritten.replace(/\s+/g, ' ').trim();
+    cleaned = cleaned.replace(/\s+/g, ' ').trim();
+    if (!cleaned) cleaned = base;
 
-    if (!rewritten || rewritten === base) {
-        return [base];
-    }
-    return uniqueStrings([base, rewritten]);
+    // Step 2: 同义词扩展（基于清洗后的 query，减少噪音干扰匹配）
+    const synonymVariant = buildSynonymVariant(cleaned);
+
+    // 候选：原始 → 清洗后（若不同）→ 同义词扩展（若不同）
+    const candidates = [
+        base,
+        cleaned,
+        ...(synonymVariant ? [synonymVariant] : []),
+    ];
+    return uniqueStrings(candidates);
 }
 
 function normalizeToken(value: string): string {
