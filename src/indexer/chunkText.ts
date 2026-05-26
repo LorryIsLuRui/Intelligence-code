@@ -177,27 +177,61 @@ export function splitTextIntoChunks(
                 : [block.text];
 
         for (const part of oversizedParts) {
-            // 3. overlap 滑动窗口：每当累计块接近目标大小或即将超出上限时，先把当前块收敛成一个 chunk，再开始下一块。每个新块的开头会带上前一个块末尾 overlapChars 长度的文本，减少边界信息丢失。
+            // ── 3. 滑动窗口 + overlap ─────────────────────────────────────────
+            // 目标：把 parts 依次合并到 currentBlocks，直到"该收了"再收敛成一个 chunk。
+            // 收敛后 finalizeChunk 会把末尾 overlapChars 个字符带入下一块，减少边界信息丢失。
+            //
+            // 执行示例（targetChars=20, maxChars=30, overlapChars=5）：
+            //
+            //   part="Hello world"(11)   currentLength=0  → 直接 push
+            //     currentBlocks=["Hello world"]  currentLength=11
+            //
+            //   part="Foo bar baz"(11)   additionLength=11+2=13  currentLength+13=24 ≤ 30，未达目标 → 直接 push
+            //     currentBlocks=["Hello world","Foo bar baz"]  currentLength=24
+            //
+            //   part="A long sentence"(15)  additionLength=15+2=17  currentLength+17=41 > 30 → wouldOverflowMax=true
+            //     → finalizeChunk: chunks=["Hello world\n\nFoo bar baz"]
+            //                      overlap="r baz"(末5字符)  currentBlocks=["r baz"]  currentLength=5
+            //     → push "A long sentence"
+            //       currentBlocks=["r baz","A long sentence"]  currentLength=5+2+15=22
+            //
+            //   最终 finalizeChunk(overlap=0): chunks 追加 "r baz\n\nA long sentence"
+            // ─────────────────────────────────────────────────────────────────
+
+            // SEP=2 对应 blocks.join('\n\n') 中每条边界的 '\n\n' 长度；
+            // 首个 block 无分隔符，所以 currentLength===0 时不加。
+            const SEP = 2;
             const additionLength =
-                currentLength === 0 ? part.length : part.length + 2;
+                currentLength === 0 ? part.length : SEP + part.length;
+
+            // 两种情况需要先收敛当前 chunk：
+            // 1. wouldOverflowMax：加入本 part 后超出硬上限，被动截断；
+            // 2. reachedTarget   ：当前已达目标大小，主动分块，保持粒度均匀。
             const wouldOverflowMax =
                 currentLength > 0 && currentLength + additionLength > maxChars;
             const reachedTarget = currentLength >= targetChars;
 
-            // 已接近目标大小或即将超出上限时，先收敛当前 chunk，再开始下一块。
             if (wouldOverflowMax || reachedTarget) {
+                // finalizeChunk 写入 chunks，并把末尾 overlap 文本返回作为新 currentBlocks 起点。
                 currentBlocks = finalizeChunk(
                     chunks,
                     currentBlocks,
                     overlapChars
                 );
+                // overlap 文本长度不固定，必须重算（不能增量推导）。
                 currentLength = currentBlocks.join('\n\n').length;
             }
+
             currentBlocks.push(part);
-            currentLength = currentBlocks.join('\n\n').length;
+            // flush 后 currentBlocks 可能含 overlap（length ≥ 1），也可能为空（length === 0）；
+            // 增量计算避免每次重新 join 整个数组。
+            currentLength =
+                currentLength === 0
+                    ? part.length
+                    : currentLength + SEP + part.length;
         }
     }
-
+    // 收尾兜底，确保剩余内容不丢失
     finalizeChunk(chunks, currentBlocks, 0);
     return chunks;
 }
