@@ -32,13 +32,16 @@ import { rankSemanticHits, rankSymbols } from './ranking.js';
 import type { CodeSymbol, SymbolType } from '../types/symbol.js';
 import {
     DEMO_PATH_PRIORITY_PENALTY,
+    INDEX_FILE_PRIORITY_BOOST,
     LITERAL_MATCH_PRIORITY_BOOST,
     MIN_LITERAL_MATCH_SCORE,
     MIN_RECOMMENDATION_SCORE,
     MIN_SEMANTIC_TEXT_MATCH_SCORE,
     REQUIRED_FIELD_FALLBACK_MIN_SCORE,
+    SAME_DIR_INDEX_EXISTS_PENALTY,
 } from '../config/tuning.js';
 import { NOISE_PATTERNS, buildSynonymVariant } from '../config/queryRewrite.js';
+import type { EvalTrace } from '../types/evalTrace.js';
 
 /** 跳过原因标识 */
 const SKIPPED_REASON = {
@@ -82,6 +85,7 @@ export interface RecommendComponentInput {
     category?: string;
     semantic?: boolean;
     limit?: number;
+    evalMode?: boolean;
 }
 
 export interface RecommendedCandidate {
@@ -110,6 +114,7 @@ export interface RecommendComponentResult {
     };
     message: string;
     debug: RecommendationDebug;
+    evalTrace?: EvalTrace;
 }
 
 export interface RecommendationAttempt {
@@ -318,6 +323,15 @@ function isDemoLikePath(path: string, strict = false): boolean {
 }
 
 /**
+ * 判断文件是否为组件目录入口文件（index.js / index.ts / index.tsx / index.jsx）。
+ * 入口文件是组件的公共 API，应优先于内部子文件被推荐。
+ */
+function isIndexFile(filePath: string): boolean {
+    const basename = filePath.split('/').pop()?.toLowerCase() ?? '';
+    return /^index\.(js|ts|tsx|jsx)$/.test(basename);
+}
+
+/**
  * 判断是否为可复用候选，过滤掉明显的测试/示例代码。虽然有可能误伤一些真实组件，但优先保证推荐结果的实用性和专业度。
  * @param symbol 要判断的代码符号
  * @returns boolean 是否为可复用候选
@@ -454,6 +468,11 @@ function computeRecommendationPriority(
         notes.push('名称或文件名命中查询');
     }
 
+    if (isIndexFile(path)) {
+        score += INDEX_FILE_PRIORITY_BOOST;
+        notes.push('组件目录入口文件优先');
+    }
+
     if (isDemoLikePath(path)) {
         score -= DEMO_PATH_PRIORITY_PENALTY;
         notes.push('示例工程路径降权');
@@ -465,6 +484,70 @@ function computeRecommendationPriority(
             notes.length > 0
                 ? `${item.reason.summary} + ${notes.join(' + ')}`
                 : item.reason.summary,
+    };
+}
+
+type PriorityScoredEntry = {
+    item: ReturnType<typeof rankSemanticHits>[number];
+    adjustedScore: number;
+    adjustedReason: string;
+};
+
+/**
+ * 同目录 index 文件降权：当结果集中某目录已有 index 文件时，对该目录内其他子文件扭扣分，
+ * 解决 index.js 因内容稀疏（仅有 re-export）导致 embedding 分低而被内部子文件抑制的问题。
+ */
+function applyDirectoryIndexPenalty(
+    entries: PriorityScoredEntry[]
+): PriorityScoredEntry[] {
+    // 找出结果集中哪些目录已有 index 文件
+    const dirsWithIndex = new Set<string>();
+    for (const entry of entries) {
+        const p = entry.item.symbol.path;
+        if (isIndexFile(p)) {
+            const dir = p.includes('/')
+                ? p.substring(0, p.lastIndexOf('/'))
+                : '';
+            dirsWithIndex.add(dir);
+        }
+    }
+    if (dirsWithIndex.size === 0) return entries;
+
+    // 对同目录中的非入口文件手动扣分
+    return entries.map((entry) => {
+        const p = entry.item.symbol.path;
+        if (isIndexFile(p)) return entry;
+        const dir = p.includes('/') ? p.substring(0, p.lastIndexOf('/')) : '';
+        if (!dirsWithIndex.has(dir)) return entry;
+        const newScore = Number(
+            Math.max(
+                0,
+                entry.adjustedScore - SAME_DIR_INDEX_EXISTS_PENALTY
+            ).toFixed(3)
+        );
+        return {
+            ...entry,
+            adjustedScore: newScore,
+            adjustedReason: `${entry.adjustedReason} + 同目录入口文件已命中，内部子文件降权`,
+        };
+    });
+}
+
+interface EvalTraceAccumulator {
+    semanticIds: Set<number>;
+    reusableIds: Set<number>;
+    combinedIds: Set<number>;
+    qualifiedIds: Set<number>;
+    returnedIds: Set<number>;
+}
+
+function accToEvalTrace(acc: EvalTraceAccumulator): EvalTrace {
+    return {
+        semanticIds: [...acc.semanticIds],
+        reusableIds: [...acc.reusableIds],
+        combinedIds: [...acc.combinedIds],
+        qualifiedIds: [...acc.qualifiedIds],
+        returnedIds: [...acc.returnedIds],
     };
 }
 
@@ -601,6 +684,15 @@ export class RecommendationService {
         let selectedQuery: string | null = null;
         let fallbackReason: 'semantic_error_fallback_keyword' | null = null;
         const attempts: RecommendationAttempt[] = [];
+        const evalAcc: EvalTraceAccumulator | undefined = input.evalMode
+            ? {
+                  semanticIds: new Set(),
+                  reusableIds: new Set(),
+                  combinedIds: new Set(),
+                  qualifiedIds: new Set(),
+                  returnedIds: new Set(),
+              }
+            : undefined;
 
         this.logSearchTypes(searchTypes);
 
@@ -615,6 +707,7 @@ export class RecommendationService {
                     structureFields,
                     requiredProps,
                     requiredHooks,
+                    evalAcc,
                 });
             queriedBy = gathered.queriedBy;
             if (!fallbackReason && gathered.fallbackReason) {
@@ -641,6 +734,7 @@ export class RecommendationService {
                 requiredHooks,
                 attempt,
                 limit,
+                evalAcc,
             });
             lastRankedCandidates = candidates;
             if (candidates.length > 0) {
@@ -662,6 +756,7 @@ export class RecommendationService {
                     attempts,
                     selectedQuery,
                     fallbackReason,
+                    evalTrace: evalAcc ? accToEvalTrace(evalAcc) : undefined,
                 });
             }
             this.logAttemptCheckpoint(
@@ -685,6 +780,7 @@ export class RecommendationService {
             attempts,
             selectedQuery,
             fallbackReason,
+            evalTrace: evalAcc ? accToEvalTrace(evalAcc) : undefined,
         });
     }
 
@@ -752,6 +848,7 @@ export class RecommendationService {
         structureFields,
         requiredProps,
         requiredHooks,
+        evalAcc,
     }: {
         queryVariant: string;
         input: RecommendComponentInput;
@@ -761,6 +858,7 @@ export class RecommendationService {
         structureFields: string[];
         requiredProps: string[];
         requiredHooks: string[];
+        evalAcc?: EvalTraceAccumulator;
     }) {
         const gathered = await this.gatherSearchResults(
             queryVariant,
@@ -769,6 +867,9 @@ export class RecommendationService {
             limit
         );
         const searchResults = gathered.searchResults;
+        if (evalAcc) {
+            searchResults.forEach((r) => evalAcc.semanticIds.add(r.symbol.id));
+        }
         const attempt: RecommendationAttempt = {
             query: queryVariant,
             queriedBy: gathered.queriedBy,
@@ -816,6 +917,10 @@ export class RecommendationService {
         if (reusableCandidates.length > 0) {
             combined = reusableCandidates;
         }
+        if (evalAcc) {
+            reusableCandidates.forEach((s) => evalAcc.reusableIds.add(s.id));
+            combined.forEach((s) => evalAcc.combinedIds.add(s.id));
+        }
         attempt.combinedCount = combined.length;
         return { attempt, combined, searchResults, gathered };
     }
@@ -829,6 +934,7 @@ export class RecommendationService {
         requiredHooks,
         attempt,
         limit,
+        evalAcc,
     }: {
         combined: CodeSymbol[];
         searchResults: Array<{ symbol: CodeSymbol; similarity: number }>;
@@ -838,6 +944,7 @@ export class RecommendationService {
         requiredHooks: string[];
         attempt: RecommendationAttempt;
         limit: number;
+        evalAcc?: EvalTraceAccumulator;
     }): Promise<RecommendedCandidate[]> {
         const ranked =
             queriedBy === QUERIED_BY.SEMANTIC
@@ -866,18 +973,22 @@ export class RecommendationService {
         });
         priorityScored.sort((a, b) => b.adjustedScore - a.adjustedScore);
 
+        // 同目录 index 文件降权：对同目录非入口子文件扭扣，确保 index.js > menu.js / panel.js
+        const reranked = applyDirectoryIndexPenalty(priorityScored);
+        reranked.sort((a, b) => b.adjustedScore - a.adjustedScore);
+
         // 对优先级预排序后的 Top-K 做详情补查（getByName 补全完整 meta）
         const enriched = await this.enrichTopCandidatesWithDetail(
-            priorityScored.map((e) => e.item)
+            reranked.map((e) => e.item)
         );
         attempt.detailEnrichedCount = enriched.enrichedCount;
 
-        // 将补查结果回填到 priorityScored，保持优先级排序
+        // 将补查结果回填到 reranked，保持优先级排序
         const enrichedPriorityScored = enriched.ranked.map((item, idx) => ({
             item,
-            adjustedScore: priorityScored[idx]?.adjustedScore ?? item.score,
+            adjustedScore: reranked[idx]?.adjustedScore ?? item.score,
             adjustedReason:
-                priorityScored[idx]?.adjustedReason ?? item.reason.summary,
+                reranked[idx]?.adjustedReason ?? item.reason.summary,
         }));
 
         // 质量门控：score 阈值 + requiredProps/Hooks 命中校验（依赖完整 meta，必须在补查之后）
@@ -894,6 +1005,11 @@ export class RecommendationService {
         if (qualifiedRanked.length === 0) {
             attempt.skippedReason = SKIPPED_REASON.NO_QUALIFIED;
         }
+        if (evalAcc) {
+            qualifiedRanked.forEach((e) =>
+                evalAcc.qualifiedIds.add(e.item.symbol.id)
+            );
+        }
 
         // 已按优先级排序，直接构建候选结果
         const candidates = qualifiedRanked.map((entry) =>
@@ -905,6 +1021,9 @@ export class RecommendationService {
                 requiredHooks
             )
         );
+        if (evalAcc) {
+            candidates.forEach((c) => evalAcc.returnedIds.add(c.id));
+        }
         console.error(
             '[code-intelligence-mcp] recommendComponent.rank query=%s queriedBy=%s enriched=%s qualified=%s candidates=%s',
             queryVariant,
@@ -962,6 +1081,7 @@ export class RecommendationService {
         attempts,
         selectedQuery,
         fallbackReason,
+        evalTrace,
     }: {
         recommended: RecommendedCandidate | null;
         alternatives: RecommendedCandidate[];
@@ -971,6 +1091,7 @@ export class RecommendationService {
         attempts: RecommendationAttempt[];
         selectedQuery: string | null;
         fallbackReason: 'semantic_error_fallback_keyword' | null;
+        evalTrace?: EvalTrace;
     }): RecommendComponentResult {
         return {
             recommended,
@@ -990,6 +1111,7 @@ export class RecommendationService {
                 retryUsed: attempts.length > 1,
                 fallbackReason,
             },
+            evalTrace,
         };
     }
 }

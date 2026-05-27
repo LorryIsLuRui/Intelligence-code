@@ -1,0 +1,71 @@
+{"id":"q001","input":{"query":"form input with validation","category":"form"},"expected":[{"name":"FormInput","path":"src/components/FormInput.tsx","rel":2}],"tags":["en","component","form"]}
+{"id":"q002","input":{"query":"表单输入框","category":"component"},"expected":[{"name":"FormInput","path":"src/components/FormInput.tsx","rel":2}],"tags":["zh","alias","form"]}
+{"id":"q003","input":{"query":"帮我找一个带验证的 input 组件","requiredProps":["onChange","error"]},"expected":[{"name":"FormInput","path":"src/components/FormInput.tsx","rel":2}],"tags":["zh","colloquial","form"]}
+{"id":"q004","input":{"query":"input 支持 onChange 回调","requiredProps":["onChange"]},"expected":[{"name":"FormInput","path":"src/components/FormInput.tsx","rel":2}],"tags":["zh-en","prop-based","form"]}
+{"id":"q005","input":{"query":"有没有可复用的表单输入组件"},"expected":[{"name":"FormInput","path":"src/components/FormInput.tsx","rel":2}],"tags":["zh","colloquial","form"]}
+{"id":"q006","input":{"query":"controlled input value onChange","requiredProps":["value","onChange"]},"expected":[{"name":"FormInput","path":"src/components/FormInput.tsx","rel":2}],"tags":["en","prop-based","form"]}
+{"id":"q007","input":{"query":"input 有 error 提示","requiredProps":["error"]},"expected":[{"name":"FormInput","path":"src/components/FormInput.tsx","rel":2}],"tags":["zh-en","prop-based","form"]}
+{"id":"q008","input":{"query":"FormInput","category":"component"},"expected":[{"name":"FormInput","path":"src/components/FormInput.tsx","rel":2}],"tags":["en","exact-name"]}
+{"id":"q009","input":{"query":"reusable form input component"},"expected":[{"name":"FormInput","path":"src/components/FormInput.tsx","rel":2}],"tags":["en","component","form"]}
+{"id":"q010","input":{"query":"帮我找 useForm hook","category":"hook"},"expected":[{"name":"FormInput","path":"src/components/FormInput.tsx","rel":1}],"tags":["zh","colloquial","hook"]}
+{"id":"q011","input":{"query":"format date YYYY-MM-DD","category":"util"},"expected":[{"name":"formatDate","path":"src/utils/date.ts","rel":2}],"tags":["en","function","date"]}
+{"id":"q012","input":{"query":"日期格式化","category":"date"},"expected":[{"name":"formatDate","path":"src/utils/date.ts","rel":2}],"tags":["zh","alias","date"]}
+{"id":"q013","input":{"query":"有没有格式化时间的工具函数"},"expected":[{"name":"formatDate","path":"src/utils/date.ts","rel":2}],"tags":["zh","colloquial","function"]}
+{"id":"q014","input":{"query":"date utility function","category":"util"},"expected":[{"name":"formatDate","path":"src/utils/date.ts","rel":2}],"tags":["en","function","date"]}
+{"id":"q015","input":{"query":"date formatter helper"},"expected":[{"name":"formatDate","path":"src/utils/date.ts","rel":2}],"tags":["en","alias","date"]}
+{"id":"q016","input":{"query":"把日期转成字符串"},"expected":[{"name":"formatDate","path":"src/utils/date.ts","rel":2}],"tags":["zh","colloquial","date"]}
+{"id":"q017","input":{"query":"formatDate","category":"function"},"expected":[{"name":"formatDate","path":"src/utils/date.ts","rel":2}],"tags":["en","exact-name","date"]}
+{"id":"q018","input":{"query":"时间格式化工具"},"expected":[{"name":"formatDate","path":"src/utils/date.ts","rel":2}],"tags":["zh","alias","date"]}
+{"id":"q019","input":{"query":"dialog component with title and content","category":"component"},"expected":[{"name":"Dialog","path":"src/components/Dialog.tsx","rel":2}],"tags":["en","component","dialog"]}
+{"id":"q020","input":{"query":"弹窗 onClose","requiredProps":["onClose"]},"expected":[{"name":"Dialog","path":"src/components/Dialog.tsx","rel":2},{"name":"HomeBar","path":"src/components/HomeBar.tsx","rel":1}],"tags":["zh","alias","prop-based"]}
+{"id":"q021","input":{"query":"弹框组件","category":"component"},"expected":[{"name":"Dialog","path":"src/components/Dialog.tsx","rel":2}],"tags":["zh","alias","dialog"]}
+{"id":"q022","input":{"query":"modal popup component"},"expected":[{"name":"Dialog","path":"src/components/Dialog.tsx","rel":2}],"tags":["en","alias","dialog"]}
+{"id":"q023","input":{"query":"确认弹窗"},"expected":[{"name":"Dialog","path":"src/components/Dialog.tsx","rel":2}],"tags":["zh","colloquial","dialog"]}
+{"id":"q024","input":{"query":"dialog with title content and close button"},"expected":[{"name":"Dialog","path":"src/components/Dialog.tsx","rel":2}],"tags":["en","description-based","dialog"]}
+{"id":"q025","input":{"query":"对话框","category":"component"},"expected":[{"name":"Dialog","path":"src/components/Dialog.tsx","rel":2}],"tags":["zh","alias","dialog"]}
+{"id":"q026","input":{"query":"popup component","category":"component"},"expected":[{"name":"Dialog","path":"src/components/Dialog.tsx","rel":2}],"tags":["en","alias","dialog"]}
+{"id":"q027","input":{"query":"有没有弹窗组件"},"expected":[{"name":"Dialog","path":"src/components/Dialog.tsx","rel":2}],"tags":["zh","colloquial","dialog"]}
+{"id":"q028","input":{"query":"关闭按钮弹窗","requiredProps":["onClose"]},"expected":[{"name":"Dialog","path":"src/components/Dialog.tsx","rel":2}],"tags":["zh","reverse-search","dialog"]}
+{"id":"q029","input":{"query":"home bar navigation component"},"expected":[{"name":"HomeBar","path":"src/components/HomeBar.tsx","rel":2}],"tags":["en","component","navigation"]}
+{"id":"q030","input":{"query":"导航栏","category":"component"},"expected":[{"name":"HomeBar","path":"src/components/HomeBar.tsx","rel":2}],"tags":["zh","alias","navigation"]}
+{"id":"q031","input":{"query":"顶部导航组件"},"expected":[{"name":"HomeBar","path":"src/components/HomeBar.tsx","rel":2}],"tags":["zh","colloquial","navigation"]}
+{"id":"q032","input":{"query":"HomeBar","category":"component"},"expected":[{"name":"HomeBar","path":"src/components/HomeBar.tsx","rel":2}],"tags":["en","exact-name"]}
+{"id":"q033","input":{"query":"带 onClose 的导航栏","requiredProps":["onClose"]},"expected":[{"name":"HomeBar","path":"src/components/HomeBar.tsx","rel":2}],"tags":["zh-en","prop-based","navigation"]}
+{"id":"q034","input":{"query":"首页顶部 bar 组件"},"expected":[{"name":"HomeBar","path":"src/components/HomeBar.tsx","rel":2}],"tags":["zh","colloquial","navigation"]}
+{"id":"q035","input":{"query":"top navigation bar"},"expected":[{"name":"HomeBar","path":"src/components/HomeBar.tsx","rel":2}],"tags":["en","description-based","navigation"]}
+{"id":"q036","input":{"query":"有没有顶部 bar 或导航组件"},"expected":[{"name":"HomeBar","path":"src/components/HomeBar.tsx","rel":2}],"tags":["zh","colloquial","navigation"]}
+{"id":"q037","input":{"query":"component with onClose prop","requiredProps":["onClose"]},"expected":[{"name":"Dialog","path":"src/components/Dialog.tsx","rel":2},{"name":"HomeBar","path":"src/components/HomeBar.tsx","rel":2}],"tags":["en","prop-based","multi-result"]}
+{"id":"q038","input":{"query":"带关闭回调的可复用组件","requiredProps":["onClose"]},"expected":[{"name":"Dialog","path":"src/components/Dialog.tsx","rel":2},{"name":"HomeBar","path":"src/components/HomeBar.tsx","rel":2}],"tags":["zh","colloquial","multi-result"]}
+{"id":"q039","input":{"query":"component with title content props","requiredProps":["title","content"]},"expected":[{"name":"Dialog","path":"src/components/Dialog.tsx","rel":2},{"name":"HomeBar","path":"src/components/HomeBar.tsx","rel":2}],"tags":["en","prop-based","multi-result"]}
+{"id":"q040","input":{"query":"组件需要传入 title","requiredProps":["title"]},"expected":[{"name":"Dialog","path":"src/components/Dialog.tsx","rel":1},{"name":"HomeBar","path":"src/components/HomeBar.tsx","rel":1}],"tags":["zh-en","prop-based","multi-result"]}
+{"id":"q041","input":{"query":"useDebounce 防抖 hook","category":"hook"},"expected":[],"tags":["zh-en","not-found","hook"]}
+{"id":"q042","input":{"query":"防抖 hook"},"expected":[],"tags":["zh","not-found","hook"]}
+{"id":"q043","input":{"query":"file upload component"},"expected":[],"tags":["en","not-found","component"]}
+{"id":"q044","input":{"query":"文件上传组件"},"expected":[],"tags":["zh","not-found","component"]}
+{"id":"q045","input":{"query":"pagination component"},"expected":[],"tags":["en","not-found","component"]}
+{"id":"q046","input":{"query":"分页组件","category":"component"},"expected":[],"tags":["zh","not-found","component"]}
+{"id":"q047","input":{"query":"date picker calendar"},"expected":[],"tags":["en","not-found","component"]}
+{"id":"q048","input":{"query":"图表组件 chart"},"expected":[],"tags":["zh-en","not-found","component"]}
+{"id":"q049","input":{"query":"useAuth authentication hook"},"expected":[],"tags":["en","not-found","hook"]}
+{"id":"q050","input":{"query":"购物车 cart 组件"},"expected":[],"tags":["zh-en","not-found","domain-specific"]}
+{"id":"q051","input":{"query":"cascader component","category":"component"},"expected":[{"name":"Cascader","path":"src/components/cascader/index.tsx","rel":2},{"name":"CascaderMenu","path":"src/components/cascader/menu.tsx","rel":0}],"tags":["en","component","cascader","index-priority"]}
+{"id":"q052","input":{"query":"级联选择器","category":"component"},"expected":[{"name":"Cascader","path":"src/components/cascader/index.tsx","rel":2},{"name":"CascaderMenu","path":"src/components/cascader/menu.tsx","rel":0}],"tags":["zh","alias","cascader","index-priority"]}
+{"id":"q053","input":{"query":"有没有级联组件"},"expected":[{"name":"Cascader","path":"src/components/cascader/index.tsx","rel":2}],"tags":["zh","colloquial","cascader","index-priority"]}
+{"id":"q054","input":{"query":"cascading dropdown selector"},"expected":[{"name":"Cascader","path":"src/components/cascader/index.tsx","rel":2}],"tags":["en","description-based","cascader","index-priority"]}
+{"id":"q055","input":{"query":"Cascader","category":"component"},"expected":[{"name":"Cascader","path":"src/components/cascader/index.tsx","rel":2}],"tags":["en","exact-name","cascader","index-priority"]}
+{"id":"q056","input":{"query":"cascader 菜单面板","category":"component"},"expected":[{"name":"Cascader","path":"src/components/cascader/index.tsx","rel":2},{"name":"CascaderMenu","path":"src/components/cascader/menu.tsx","rel":1},{"name":"CascaderPanel","path":"src/components/cascader/panel.tsx","rel":1}],"tags":["zh-en","description-based","cascader","index-priority"]}
+{"id":"q057","input":{"query":"async data fetch hook","category":"hook"},"expected":[{"name":"useRequest","path":"src/hooks/useRequest.ts","rel":2}],"tags":["en","hook","network","side-effect"]}
+{"id":"q058","input":{"query":"异步请求 hook loading error"},"expected":[{"name":"useRequest","path":"src/hooks/useRequest.ts","rel":2}],"tags":["zh-en","hook","network","side-effect"]}
+{"id":"q059","input":{"query":"有没有封装 loading 状态的请求 hook"},"expected":[{"name":"useRequest","path":"src/hooks/useRequest.ts","rel":2}],"tags":["zh","colloquial","hook","network"]}
+{"id":"q060","input":{"query":"hook with network side effect manual trigger","requiredHooks":["useState","useEffect"]},"expected":[{"name":"useRequest","path":"src/hooks/useRequest.ts","rel":2}],"tags":["en","hook","side-effect","prop-based"]}
+{"id":"q061","input":{"query":"localStorage hook persist state"},"expected":[{"name":"useLocalStorage","path":"src/hooks/useLocalStorage.ts","rel":2}],"tags":["en","hook","storage","side-effect"]}
+{"id":"q062","input":{"query":"本地存储 hook"},"expected":[{"name":"useLocalStorage","path":"src/hooks/useLocalStorage.ts","rel":2}],"tags":["zh","hook","storage","side-effect"]}
+{"id":"q063","input":{"query":"click outside handler hook dom side effect"},"expected":[{"name":"useClickOutside","path":"src/hooks/useClickOutside.ts","rel":2}],"tags":["en","hook","dom","side-effect"]}
+{"id":"q064","input":{"query":"点击元素外部触发回调"},"expected":[{"name":"useClickOutside","path":"src/hooks/useClickOutside.ts","rel":2}],"tags":["zh","hook","dom","caller-relation"]}
+{"id":"q065","input":{"query":"button component primary danger variant","category":"component"},"expected":[{"name":"Button","path":"src/components/Button/index.tsx","rel":2}],"tags":["en","component","button","index-priority"]}
+{"id":"q066","input":{"query":"通用按钮组件"},"expected":[{"name":"Button","path":"src/components/Button/index.tsx","rel":2}],"tags":["zh","component","button","index-priority"]}
+{"id":"q067","input":{"query":"format currency number with symbol"},"expected":[{"name":"formatCurrency","path":"src/utils/format.ts","rel":2},{"name":"formatNumber","path":"src/utils/format.ts","rel":1}],"tags":["en","function","format"]}
+{"id":"q068","input":{"query":"货币金额格式化"},"expected":[{"name":"formatCurrency","path":"src/utils/format.ts","rel":2}],"tags":["zh","function","format"]}
+{"id":"q069","input":{"query":"email validation function"},"expected":[{"name":"validateEmail","path":"src/utils/validate.ts","rel":2}],"tags":["en","function","validate"]}
+{"id":"q070","input":{"query":"表单必填校验工具函数"},"expected":[{"name":"validateRequired","path":"src/utils/validate.ts","rel":2},{"name":"composeValidators","path":"src/utils/validate.ts","rel":1}],"tags":["zh","function","validate","form"]}
+{"id":"q071","input":{"query":"级联选择器嵌套选项 children interface"},"expected":[{"name":"Cascader","path":"src/components/cascader/index.tsx","rel":2}],"tags":["zh-en","component","cascader","nested-interface"]}
