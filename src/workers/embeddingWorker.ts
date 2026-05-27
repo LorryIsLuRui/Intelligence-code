@@ -14,6 +14,12 @@
  * 大仓分片：
  * - 直接启动多个 worker 进程（同一 Redis）即可水平扩展，BullMQ 原生分布式协调
  */
+
+// env.redisUrl (同一个 Redis)  url+name('embedding') 决定了 BullMQ 的队列，生产者和消费者通过它们读写同一个队列实现通信
+//        │
+//        ├─ Queue('embedding')      → LPUSH bull:embedding:wait  ...  ← Producer 写
+//        ├─ Worker('embedding')     → BRPOPLPUSH bull:embedding:wait  ← Worker 消费
+//        └─ QueueEvents('embedding')→ SUBSCRIBE bull:embedding:events ← 监听事件
 import { Worker, QueueEvents } from 'bullmq';
 import type { Job } from 'bullmq';
 import { Redis } from 'ioredis';
@@ -148,12 +154,15 @@ export async function startEmbeddingWorker(
 ): Promise<{ worker: Worker; stop: () => Promise<void> }> {
     const { concurrency = 5, rpmLimit = 100 } = opts;
 
+    // worker1 负责从 Redis 拉 job。
+    // BullMQ Worker 用它执行 BRPOPLPUSH 这类阻塞命令来抢占 job、加锁、标记完成/失败。阻塞命令会占住整个连接，无法复用。
     const connection = new Redis(env.redisUrl, {
         maxRetriesPerRequest: null,
         enableReadyCheck: false,
     });
 
-    // 独立连接监听队列事件（BullMQ 要求不共用 Worker 连接）
+    // worker2 负责订阅 Redis 的 Pub/Sub 事件频道。
+    // 给 QueueEvents 用。BullMQ 在 Redis 里发 Pub/Sub 事件（drained、completed、failed…），监听方需要独立的连接订阅这些事件频道。如果共用 connection，阻塞命令会让 Pub/Sub 订阅无法正常工作，所以 BullMQ 官方要求两个连接必须分开。
     const eventsConnection = new Redis(env.redisUrl, {
         maxRetriesPerRequest: null,
         enableReadyCheck: false,

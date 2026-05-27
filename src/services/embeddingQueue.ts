@@ -17,6 +17,7 @@ let _queue: Queue | null = null;
 let _connection: Redis | null = null;
 
 function getQueue(): Queue {
+    // worker3 往 Redis 写 job
     if (!_queue) {
         _connection = new Redis(env.redisUrl, {
             maxRetriesPerRequest: null, // BullMQ required

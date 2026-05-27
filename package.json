@@ -21,6 +21,8 @@
         "start": "node dist/index.js",
         "index": "tsx src/cli/index-codebase-cli.ts",
         "ci-index": "tsx src/cli/ci-index-cli.ts",
+        "eval": "tsx src/cli/eval-recommendation-cli.ts",
+        "analyze": "tsx src/cli/eval-analyze-cli.ts",
         "worker:embedding": "tsx src/cli/embedding-worker-cli.ts",
         "embedding:dev": "cd embedding-service && python3 -m uvicorn app:app --host 127.0.0.1 --port 8765",
         "docker:up": "docker compose up -d",

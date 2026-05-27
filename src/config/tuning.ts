@@ -121,6 +121,10 @@ export const REQUIRED_FIELD_FALLBACK_MIN_SCORE = 0.4;
 export const LITERAL_MATCH_PRIORITY_BOOST = 0.22;
 /** 路径为 demo/example 风格时，对优先级分数扣减的值 */
 export const DEMO_PATH_PRIORITY_PENALTY = 0.18;
+/** 文件名为 index.js/ts/tsx/jsx 时对优先级分数的加成（优先推荐组件目录入口文件） */
+export const INDEX_FILE_PRIORITY_BOOST = 0.18;
+/** 同目录中存在 index 文件时，对其他非入口子文件的优先级扣减（避免 menu.js / panel.js 等内部实现抢占推荐位） */
+export const SAME_DIR_INDEX_EXISTS_PENALTY = 0.25;
 
 // ─── 搜索工具结果过滤 (tools/searchSymbols.ts) ───────────────────────────────
 

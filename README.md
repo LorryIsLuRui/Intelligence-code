@@ -45,3 +45,22 @@
 
 MYSQL\*SYMBOLS_TABLE=frontend_collections_symbols
 INDEX_GLOB=xxx/\*\*/\_.{js,jsx,ts,tsx}
+
+## 4) 离线测评
+
+```javascript
+npx tsx src/cli/eval-recommendation-cli.ts
+# 或指定 limit
+npx tsx src/cli/eval-recommendation-cli.ts --limit 10
+```
+
+## 5）分析离线测评结果
+
+```javascript
+npm run analyze                                          # 自动读最新结果文件
+npm run analyze -- offline_eval/results/2026-05-27.jsonl  # 指定文件
+npm run analyze -- --baseline offline_eval/results/2026-05-26.jsonl  # 与 baseline 对比 delta
+
+```
+
+或者直接引用eval-analysis.prompt.md 对最新结果分析
