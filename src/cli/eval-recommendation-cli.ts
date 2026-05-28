@@ -29,7 +29,9 @@ function getArg(flag: string, fallback: string): string {
 const QUERY_SET_PATH = getArg('--query-set', 'offline_eval/query_set.jsonl');
 const OUTPUT_DIR = getArg('--output', 'offline_eval/results');
 const TOP_K_MAIN = Number(getArg('--limit', '10')); // Recall@K_MAIN / MRR@K / nDCG@K
-const TOP_K_WIDE = 50; // Recall@50（宽口径）
+const RECALL_WIDE_K = 50; // 宽口径召回深度（用于 Recall@50），不是测试集数量
+const REL_RELEVANT_MIN = 1; // rel >= 1 计入相关结果
+const REL_PRIMARY = 2; // rel = 2 表示主答案/最高相关度
 
 // ─── 数据类型 ─────────────────────────────────────────────────────────────────
 
@@ -58,8 +60,8 @@ interface QueryResult {
     tags: string[];
     recallMain: number | null; // null = no expected (negative sample)
     recall50: number | null;
-    mrrMain: number | null;
-    ndcgMain: number | null;
+    firstHitScore: number | null; // 首位命中率：第一个正确结果在第几位（MRR@10）
+    // rankingQuality: number | null; // 排序质量：综合考虑位置与相关度的整体排名得分（nDCG@10）
     top1Correct: boolean | null;
     returnedNames: string[];
     failures: SymbolFailureDetail[];
@@ -79,10 +81,11 @@ function recallAtK(
     expected: ExpectedSymbol[],
     k: number
 ): number {
-    const relevant = expected.filter((e) => e.rel >= 1);
+    const relevant = expected.filter((e) => e.rel >= REL_RELEVANT_MIN);
     if (relevant.length === 0) return 1;
     const topK = returnedNames.slice(0, k);
     const hits = relevant.filter((e) => topK.includes(e.name));
+    // 召回率@k = 真实召回的 / 所有相关的
     return hits.length / relevant.length;
 }
 
@@ -96,10 +99,11 @@ function mrrAtK(
     k: number
 ): number {
     const relevantNames = new Set(
-        expected.filter((e) => e.rel >= 1).map((e) => e.name)
+        expected.filter((e) => e.rel >= REL_RELEVANT_MIN).map((e) => e.name)
     );
     const topK = returnedNames.slice(0, k);
     for (let i = 0; i < topK.length; i++) {
+        // 有一个命中的 就返回对应的 MRR 分数，越靠前分数越高；如果都没命中，最后返回 0。
         if (relevantNames.has(topK[i] as string)) return 1 / (i + 1);
     }
     return 0;
@@ -134,15 +138,16 @@ function ndcgAtK(
     return idcg === 0 ? 1 : dcg / idcg;
 }
 
-// ─── 失败分类（无 ID 时按名称降级处理） ─────────────────────────────────────
-
+/**
+ * 返回失败阶段原因数组（无 ID 时按名称降级处理）
+ */
 function classifyFailuresFromTrace(
     expected: ExpectedSymbol[],
     returnedNames: string[],
     evalTrace: EvalTrace | undefined,
     idByName: Map<string, number>
 ): SymbolFailureDetail[] {
-    const relevant = expected.filter((e) => e.rel >= 1);
+    const relevant = expected.filter((e) => e.rel >= REL_RELEVANT_MIN);
     const failures: SymbolFailureDetail[] = [];
 
     for (const exp of relevant) {
@@ -203,8 +208,11 @@ function printSummary(
 
     const recallMain = avg(positive.map((r) => r.recallMain ?? 0));
     const recall50 = avg(positive.map((r) => r.recall50 ?? 0));
-    const mrr = avg(positive.map((r) => r.mrrMain ?? 0));
-    const ndcg = avg(positive.map((r) => r.ndcgMain ?? 0));
+    const firstHitScore = avg(positive.map((r) => r.firstHitScore ?? 0));
+    // const rankingQuality = avg(positive.map((r) => r.rankingQuality ?? 0));
+    const coverage =
+        positive.filter((r) => (r.recallMain ?? 0) > 0).length /
+        (positive.length || 1);
     const top1Acc =
         positive.filter((r) => r.top1Correct === true).length /
         (positive.length || 1);
@@ -229,18 +237,16 @@ function printSummary(
     );
     console.log('');
     console.log(
-        `Recall@${kMain}:    ${formatPct(recallMain)}${diff('recallMain', recallMain)}`
+        `召回率(Recall@${kMain}):         ${formatPct(recallMain)}${diff('recallMain', recallMain)}`
     );
     console.log(
-        `Recall@50:    ${formatPct(recall50)}${diff('recall50', recall50)}`
-    );
-    console.log(`MRR@${kMain}:       ${formatPct(mrr)}${diff('mrr', mrr)}`);
-    console.log(`nDCG@${kMain}:      ${formatPct(ndcg)}${diff('ndcg', ndcg)}`);
-    console.log(
-        `Top1 Acc:     ${formatPct(top1Acc)}${diff('top1Acc', top1Acc)}`
+        `首位命中分(MRR@${kMain}):         ${formatPct(firstHitScore)}${diff('firstHitScore', firstHitScore)}`
     );
     console.log(
-        `False Pos:    ${formatPct(fpRate)}  (negative samples incorrectly returned results)`
+        `首条准确率(Top-1):               ${formatPct(top1Acc)}${diff('top1Acc', top1Acc)}`
+    );
+    console.log(
+        `误触率(FP):                      ${formatPct(fpRate)}  (负例被错误推荐)`
     );
     console.log('');
 
@@ -294,6 +300,7 @@ async function loadQuerySet(filePath: string): Promise<QueryCase[]> {
     for await (const line of rl) {
         const trimmed = line.trim();
         if (!trimmed) continue;
+        if (trimmed.startsWith('#') || trimmed.startsWith('//')) continue;
         cases.push(JSON.parse(trimmed) as QueryCase);
     }
     return cases;
@@ -303,7 +310,7 @@ async function runEval(): Promise<void> {
     console.log(`Loading query set: ${QUERY_SET_PATH}`);
     const cases = await loadQuerySet(QUERY_SET_PATH);
     console.log(
-        `Loaded ${cases.length} queries. Running eval with limit=${TOP_K_MAIN}/${TOP_K_WIDE}...\n`
+        `Loaded ${cases.length} queries. Running eval with limit=${TOP_K_MAIN}/${RECALL_WIDE_K}...\n`
     );
 
     const repository = new SymbolRepository();
@@ -313,10 +320,9 @@ async function runEval(): Promise<void> {
     for (const queryCase of cases) {
         const isNegative = queryCase.expected.length === 0;
 
-        // Run with wide limit (Recall@50)
         const wideResult = await service.recommendComponent({
             ...queryCase.input,
-            limit: TOP_K_WIDE,
+            limit: RECALL_WIDE_K,
             evalMode: true,
         });
 
@@ -325,10 +331,8 @@ async function runEval(): Promise<void> {
             ...wideResult.alternatives.map((a) => a.name),
         ];
 
-        // Run with main limit for MRR/nDCG (or reuse wide result slice)
         const mainNames = wideNames.slice(0, TOP_K_MAIN);
 
-        // Build id map from returned results
         const allReturned = [
             ...(wideResult.recommended ? [wideResult.recommended] : []),
             ...wideResult.alternatives,
@@ -338,26 +342,26 @@ async function runEval(): Promise<void> {
             wideResult.alternatives
         );
 
-        // Metrics (skip for negative samples)
         const recallMain = isNegative
             ? null
             : recallAtK(mainNames, queryCase.expected, TOP_K_MAIN);
         const recall50 = isNegative
             ? null
-            : recallAtK(wideNames, queryCase.expected, TOP_K_WIDE);
-        const mrrMain = isNegative
+            : recallAtK(wideNames, queryCase.expected, RECALL_WIDE_K);
+        const firstHitRank = isNegative
             ? null
             : mrrAtK(mainNames, queryCase.expected, TOP_K_MAIN);
-        const ndcgMain = isNegative
-            ? null
-            : ndcgAtK(mainNames, queryCase.expected, TOP_K_MAIN);
+        // const rankingQuality = isNegative
+        //     ? null
+        //     : ndcgAtK(mainNames, queryCase.expected, TOP_K_MAIN);
         const top1Correct = isNegative
             ? null
             : queryCase.expected.some(
-                  (e) => e.rel === 2 && wideResult.recommended?.name === e.name
+                  (e) =>
+                      e.rel === REL_PRIMARY &&
+                      wideResult.recommended?.name === e.name
               );
 
-        // Failure classification
         const failures = isNegative
             ? []
             : classifyFailuresFromTrace(
@@ -375,8 +379,8 @@ async function runEval(): Promise<void> {
             tags: queryCase.tags,
             recallMain,
             recall50,
-            mrrMain,
-            ndcgMain,
+            firstHitScore: firstHitRank,
+            // rankingQuality,
             top1Correct,
             returnedNames: mainNames,
             failures,
@@ -385,23 +389,20 @@ async function runEval(): Promise<void> {
         };
         results.push(qr);
 
-        // Progress
         const status = isNegative
             ? falsePositive
-                ? '✗ FP'
-                : '✓ TN'
+                ? '✗ False Positive）' // 负例，但系统返回了结果 → 误触发（False Positive）
+                : '✓ True Negative' // 负例，系统正确返回空   → 真负例（True Negative）
             : recallMain === 1
-              ? `✓ R@${TOP_K_MAIN}=1.0`
-              : `✗ R@${TOP_K_MAIN}=${(recallMain ?? 0).toFixed(2)}`;
+              ? `✓ R@${TOP_K_MAIN}=1.0 完全召回`
+              : `✗ R@${TOP_K_MAIN}=${(recallMain ?? 0).toFixed(2)} 不完全召回`;
         console.log(
             `  [${queryCase.id}] ${queryCase.input.query.slice(0, 40).padEnd(40)}  ${status}`
         );
     }
 
-    // Print summary
     printSummary(results, TOP_K_MAIN, null);
 
-    // Write JSONL report
     if (OUTPUT_DIR) {
         fs.mkdirSync(OUTPUT_DIR, { recursive: true });
         const dateStr = new Date().toISOString().slice(0, 10);
@@ -411,7 +412,7 @@ async function runEval(): Promise<void> {
         console.log(`Report written to: ${outPath}`);
     }
 
-    // Exit with non-zero if any positive query has recall=0
+    // 如果有正例查询完全没有召回任何相关结果，视为严重问题，输出警告并退出非 0 状态码以示 CI 失败。
     const zeroRecall = results.filter(
         (r) => !r.isNegativeSample && r.recallMain === 0
     );

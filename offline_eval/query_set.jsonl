@@ -1,3 +1,5 @@
+// rel 说明：0 = 不相关干扰项，1 = 次相关候选，2 = 主答案/最高相关度
+// 规则：评测时 rel >= 1 计入相关结果；rel = 2 用于标记最优答案
 {"id":"q001","input":{"query":"form input with validation","category":"form"},"expected":[{"name":"FormInput","path":"src/components/FormInput.tsx","rel":2}],"tags":["en","component","form"]}
 {"id":"q002","input":{"query":"表单输入框","category":"component"},"expected":[{"name":"FormInput","path":"src/components/FormInput.tsx","rel":2}],"tags":["zh","alias","form"]}
 {"id":"q003","input":{"query":"帮我找一个带验证的 input 组件","requiredProps":["onChange","error"]},"expected":[{"name":"FormInput","path":"src/components/FormInput.tsx","rel":2}],"tags":["zh","colloquial","form"]}
