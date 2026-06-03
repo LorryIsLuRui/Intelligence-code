@@ -91,8 +91,8 @@ interface QueryResult {
     tags: string[];
     recallMain: number | null;
     recall50: number | null;
-    mrrMain: number | null;
-    ndcgMain: number | null;
+    firstHitScore: number | null;
+    rankingQuality: number | null;
     top1Correct: boolean | null;
     returnedNames: string[];
     failures: FailureDetail[];
@@ -117,6 +117,9 @@ async function loadResults(filePath: string): Promise<QueryResult[]> {
 
 // ─── 工具函数 ─────────────────────────────────────────────────────────────────
 
+/**
+ * 计算平均值，空数组时返回 0。
+ */
 function avg(nums: number[]): number {
     if (nums.length === 0) return 0;
     return nums.reduce((s, n) => s + n, 0) / nums.length;
@@ -149,12 +152,16 @@ function recallByTag(
 interface SummaryMetrics {
     recallMain: number;
     recall50: number;
-    mrr: number;
-    ndcg: number;
+    firstHitScore: number; // 首位命中分（MRR@10，Mean Reciprocal Rank）
+    rankingQuality: number; // 排序质量（nDCG@10）
+    coverage: number; // 有效覆盖率
     top1Acc: number;
     fpRate: number;
 }
 
+/**
+ * 计算各项指标的平均值，返回一个汇总对象。
+ */
 function computeMetrics(
     positive: QueryResult[],
     negative: QueryResult[]
@@ -162,8 +169,11 @@ function computeMetrics(
     return {
         recallMain: avg(positive.map((r) => r.recallMain ?? 0)),
         recall50: avg(positive.map((r) => r.recall50 ?? 0)),
-        mrr: avg(positive.map((r) => r.mrrMain ?? 0)),
-        ndcg: avg(positive.map((r) => r.ndcgMain ?? 0)),
+        firstHitScore: avg(positive.map((r) => r.firstHitScore ?? 0)),
+        rankingQuality: avg(positive.map((r) => r.rankingQuality ?? 0)),
+        coverage:
+            positive.filter((r) => (r.recallMain ?? 0) > 0).length /
+            (positive.length || 1),
         top1Acc:
             positive.filter((r) => r.top1Correct === true).length /
             (positive.length || 1),
@@ -185,7 +195,7 @@ async function analyze(): Promise<void> {
 
     const metrics = computeMetrics(positive, negative);
 
-    // Baseline（用于 delta 对比）
+    // 如果不传 --baseline，baseMetrics 就是 undefined，delta() 函数返回空字符串，指标后面不显示涨跌。
     let baseMetrics: SummaryMetrics | undefined;
     if (BASELINE_PATH && fs.existsSync(BASELINE_PATH)) {
         const baseResults = await loadResults(BASELINE_PATH);
@@ -238,22 +248,16 @@ async function analyze(): Promise<void> {
     // ── 关键指标 ──
     console.log('\n关键指标\n');
     console.log(
-        `  Recall@10:      ${pct(metrics.recallMain).padStart(7)}${delta(metrics.recallMain, baseMetrics?.recallMain)}`
+        `  召回率(Recall@10):             ${pct(metrics.recallMain).padStart(7)}${delta(metrics.recallMain, baseMetrics?.recallMain)}`
     );
     console.log(
-        `  Recall@50:      ${pct(metrics.recall50).padStart(7)}${delta(metrics.recall50, baseMetrics?.recall50)}`
+        `  首位命中分(MRR@10):             ${pct(metrics.firstHitScore).padStart(7)}${delta(metrics.firstHitScore, baseMetrics?.firstHitScore)}`
     );
     console.log(
-        `  MRR@10:         ${pct(metrics.mrr).padStart(7)}${delta(metrics.mrr, baseMetrics?.mrr)}`
+        `  首条准确率(Top-1):              ${pct(metrics.top1Acc).padStart(7)}${delta(metrics.top1Acc, baseMetrics?.top1Acc)}`
     );
     console.log(
-        `  nDCG@10:        ${pct(metrics.ndcg).padStart(7)}${delta(metrics.ndcg, baseMetrics?.ndcg)}`
-    );
-    console.log(
-        `  Top1 Acc:       ${pct(metrics.top1Acc).padStart(7)}${delta(metrics.top1Acc, baseMetrics?.top1Acc)}`
-    );
-    console.log(
-        `  False Positive: ${pct(metrics.fpRate).padStart(7)}${delta(metrics.fpRate, baseMetrics?.fpRate)}`
+        `  误触率(FP):                    ${pct(metrics.fpRate).padStart(7)}${delta(metrics.fpRate, baseMetrics?.fpRate)}`
     );
     console.log(
         `\n  总 query 数：${results.length}（正例 ${positive.length}，负例 ${negative.length}）`
@@ -321,7 +325,7 @@ async function analyze(): Promise<void> {
         );
     }
 
-    // 发现2：函数类符号类型推断
+    // 发现2：函数类类型推断
     const funcStat = tagRecalls.get('function');
     if (funcStat && funcStat.recall < THRESHOLDS.FUNC_RECALL_LOW) {
         findings.push(

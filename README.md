@@ -52,6 +52,8 @@ INDEX_GLOB=xxx/\*\*/\_.{js,jsx,ts,tsx}
 npx tsx src/cli/eval-recommendation-cli.ts
 # 或指定 limit
 npx tsx src/cli/eval-recommendation-cli.ts --limit 10
+
+npm run eval
 ```
 
 ## 5）分析离线测评结果
