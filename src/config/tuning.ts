@@ -110,8 +110,6 @@ export const MIN_RECOMMENDATION_SCORE = {
     keyword: 0.45,
 } as const;
 
-/** 语义模式下文本维度分数须达到的下限（用于高置信度路径） */
-export const MIN_SEMANTIC_TEXT_MATCH_SCORE = 0.6;
 /** 名称/路径字面命中时，放宽的综合分数下限 */
 export const MIN_LITERAL_MATCH_SCORE = 0.18;
 /** props/hooks 结构字段全部命中时，放宽的综合分数下限 */

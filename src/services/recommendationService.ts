@@ -1,63 +1,34 @@
-import type { SymbolRepository } from '../repositories/symbolRepository.js';
 /**
- * ──────────────────────────────────────────────────────────────────────────────
- * [Agent 闭环流程总览]
+ * recommendationService.ts — 统一的代码推荐管道。
  *
- * recommendComponent (核心 agent 主循环)
- *
- * 1. 解析输入，生成 query 变体（query rewrite，多轮尝试）
- * 2. 对每个 query 变体依次尝试：
- *    2.1. 搜索候选（优先语义，异常时回退关键词）
- *    2.2. 结构字段补充搜索（props/hooks）
- *    2.3. 合并去重、按 category 过滤、过滤不可复用项
- *    2.4. 排序、Top-K 详情补查（enrich）
- *    2.5. 质量门控（quality gate，必须命中 requiredProps/hooks 或高分）
- *    2.6. 优先级调整（如名称/路径命中加分、demo 路径降权）
- *    2.7. 命中则立即返回推荐结果，记录 debug trace
- *    2.8. 未命中则进入下一 query 变体（自动重试）
- * 3. 所有变体均未命中则返回无结果，debug trace 记录所有尝试
- *
- * 关键特性：
- * - query rewrite + retry（自动多轮尝试）
- * - 结构/语义/关键词多路融合
- * - Top-K 详情补查
- * - 质量门控与优先级调整
- * - 全流程 debug trace（可用于 agent 反思/可观测性）
- *
- * 总结：
- * “实现了一个单 agent 闭环推荐系统，支持 query 自动重写与多轮重试，融合语义/结构/关键词多路检索，Top-K 详情补查，质量门控与优先级调整，并输出全流程 debug trace，便于 agent 反思和可观测性。”
- * ──────────────────────────────────────────────────────────────────────────────
+ * Pipeline:
+ *   Step 1: extractQueryKeywords(rawQuery)              → 毫秒级本地特征词提取
+ *   Step 2: callLLMToRewrite(rawQuery, keywords)         → LLM 熔炼为英文伪文档
+ *   Step 3: embed(englishProse)                          → 单次 384 维向量化
+ *   Step 4: Promise.all([BM25(keywords), HNSW(vector)])  → 两路并发检索
+ *   Step 5: RRF 融合
+ *   Step 6: rankSemanticHits + 优先级调整 + Enrich
+ *   Step 7: 返回推荐结果
  */
+
+import type { SymbolRepository } from '../repositories/symbolRepository.js';
 import { rankSemanticHits, rankSymbols } from './ranking.js';
 import type { CodeSymbol, SymbolType } from '../types/symbol.js';
 import {
     DEMO_PATH_PRIORITY_PENALTY,
     INDEX_FILE_PRIORITY_BOOST,
     LITERAL_MATCH_PRIORITY_BOOST,
-    MIN_LITERAL_MATCH_SCORE,
-    MIN_RECOMMENDATION_SCORE,
-    MIN_SEMANTIC_TEXT_MATCH_SCORE,
-    REQUIRED_FIELD_FALLBACK_MIN_SCORE,
     SAME_DIR_INDEX_EXISTS_PENALTY,
 } from '../config/tuning.js';
-import { NOISE_PATTERNS, buildSynonymVariant } from '../config/queryRewrite.js';
+import { callLLMToRewrite, extractQueryKeywords } from './queryRewriter.js';
+import { createEmbeddingClient } from './embeddingClient.js';
+import { env } from '../config/env.js';
 import type { EvalTrace } from '../types/evalTrace.js';
-
-/** 跳过原因标识 */
-const SKIPPED_REASON = {
-    NO_COMBINED: 'no_combined' as const,
-    NO_QUALIFIED: 'no_qualified' as const,
-};
 
 /** 查询方式标识 */
 const QUERIED_BY = {
     SEMANTIC: 'semantic' as const,
     KEYWORD: 'keyword' as const,
-};
-
-/** 回退原因标识 */
-const FALLBACK_REASON = {
-    SEMANTIC_ERROR: 'semantic_error_fallback_keyword' as const,
 };
 
 /** 推荐结果文案 */
@@ -68,15 +39,12 @@ const RECOMMENDATION_MESSAGE = {
 
 /** 详情补查的 top-k 条数 */
 const ENRICH_TOP_K = 3;
-/** 最多取查询变体数量（原始 + 清洗 + 同义词扩展） */
-const MAX_QUERY_VARIANTS = 3;
-/** 结构/语义搜索 limit 倍数 */
+/** 搜索 limit 倍数 */
 const STRUCTURE_LIMIT_MULTIPLIER = 4;
-/** 结构/语义搜索 limit 最小值 */
+/** 搜索 limit 最小值 */
 const STRUCTURE_LIMIT_MIN = 12;
-/** 关键词搜索命中时的默认相似度补值 */
-const DEFAULT_KEYWORD_SIMILARITY = 0.55;
-// ──────────────────────────────────────────────────────────────────────────────
+
+// ─── Interfaces ──────────────────────────────────────────────────────────────
 
 export interface RecommendComponentInput {
     query: string;
@@ -135,38 +103,10 @@ export interface RecommendationDebug {
     fallbackReason: 'semantic_error_fallback_keyword' | null;
 }
 
+// ─── Utilities ───────────────────────────────────────────────────────────────
+
 function uniqueStrings(values: string[] = []): string[] {
     return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
-}
-
-/**
- * 对原始查询进行清洗和变体生成：
- * 1. 噪音词清洗（去掉口语化前缀、无意义词）
- * 2. 同义词扩展（中英互转、别名替换）
- * 生成最多 MAX_QUERY_VARIANTS 个去重变体，按从精确到宽泛排序。
- */
-function buildQueryVariants(rawQuery: string): string[] {
-    const base = rawQuery.trim();
-    if (!base) return [];
-
-    // Step 1: 噪音词清洗
-    let cleaned = base;
-    for (const pattern of NOISE_PATTERNS) {
-        cleaned = cleaned.replace(pattern, ' ');
-    }
-    cleaned = cleaned.replace(/\s+/g, ' ').trim();
-    if (!cleaned) cleaned = base;
-
-    // Step 2: 同义词扩展（基于清洗后的 query，减少噪音干扰匹配）
-    const synonymVariant = buildSynonymVariant(cleaned);
-
-    // 候选：原始 → 清洗后（若不同）→ 同义词扩展（若不同）
-    const candidates = [
-        base,
-        cleaned,
-        ...(synonymVariant ? [synonymVariant] : []),
-    ];
-    return uniqueStrings(candidates);
 }
 
 function normalizeToken(value: string): string {
@@ -269,17 +209,6 @@ function toCandidate(
     };
 }
 
-function mergeCandidates(symbols: CodeSymbol[]): CodeSymbol[] {
-    const seen = new Set<number>();
-    const merged: CodeSymbol[] = [];
-    for (const symbol of symbols) {
-        if (seen.has(symbol.id)) continue;
-        seen.add(symbol.id);
-        merged.push(symbol);
-    }
-    return merged;
-}
-
 const NON_REUSABLE_PATH_SEGMENTS = [
     '__tests__',
     '__mocks__',
@@ -298,12 +227,6 @@ const DEMO_LIKE_PATH_SEGMENTS_STRICT = [
     '/demos/',
 ];
 
-const DEMO_LIKE_PATH_SEGMENTS_SOFT = [
-    '/one-ui-demo/',
-    '/example/',
-    '/examples/',
-];
-
 const NON_REUSABLE_PATH_PATTERNS = [
     '.test.',
     '.spec.',
@@ -318,24 +241,15 @@ function isDemoLikePath(path: string, strict = false): boolean {
     const normalizedPath = path.toLowerCase();
     const segments = strict
         ? DEMO_LIKE_PATH_SEGMENTS_STRICT
-        : DEMO_LIKE_PATH_SEGMENTS_SOFT;
+        : DEMO_LIKE_PATH_SEGMENTS_STRICT.slice(0, 3);
     return segments.some((segment) => normalizedPath.includes(segment));
 }
 
-/**
- * 判断文件是否为组件目录入口文件（index.js / index.ts / index.tsx / index.jsx）。
- * 入口文件是组件的公共 API，应优先于内部子文件被推荐。
- */
 function isIndexFile(filePath: string): boolean {
     const basename = filePath.split('/').pop()?.toLowerCase() ?? '';
     return /^index\.(js|ts|tsx|jsx)$/.test(basename);
 }
 
-/**
- * 判断是否为可复用候选，过滤掉明显的测试/示例代码。虽然有可能误伤一些真实组件，但优先保证推荐结果的实用性和专业度。
- * @param symbol 要判断的代码符号
- * @returns boolean 是否为可复用候选
- */
 export function isReusableCandidate(symbol: CodeSymbol): boolean {
     const path = symbol.path.toLowerCase();
     const name = symbol.name.toLowerCase();
@@ -353,46 +267,12 @@ export function isReusableCandidate(symbol: CodeSymbol): boolean {
     );
 }
 
-/**
- * 判断推荐结果的props/hooks等结构字段是否满足查询要求，作为强相关推荐的加分项之一。虽然有可能遗漏一些未正确标注字段的结果，但优先保证推荐结果的相关性和准确性。
- * @param symbol 要判断的代码符号
- * @param requiredProps 必需的属性列表
- * @param requiredHooks 必需的钩子列表
- * @returns boolean 是否为强相关推荐结果
- */
-function hasAllRequiredFields(
-    symbol: CodeSymbol,
-    requiredProps: string[],
-    requiredHooks: string[]
-): boolean {
-    if (requiredProps.length === 0 && requiredHooks.length === 0) {
-        return false;
-    }
-
-    const props = getMetaStrings(symbol, 'props').map(normalizeToken);
-    const hooks = getMetaStrings(symbol, 'hooks').map(normalizeToken);
-
-    return (
-        requiredProps.every((field) => props.includes(normalizeToken(field))) &&
-        requiredHooks.every((field) => hooks.includes(normalizeToken(field)))
-    );
-}
-
 function extractLiteralTokens(query: string): string[] {
     const tokens = new Set<string>();
     const genericTokens = new Set([
-        'component',
-        'components',
-        'hook',
-        'hooks',
-        'util',
-        'utils',
-        'function',
-        'functions',
-        'class',
-        'classes',
-        'type',
-        'types',
+        'component', 'components', 'hook', 'hooks',
+        'util', 'utils', 'function', 'functions',
+        'class', 'classes', 'type', 'types',
     ]);
     const normalized = query.trim().toLowerCase();
     for (const match of normalized.matchAll(/[a-z0-9_]+/g)) {
@@ -404,7 +284,6 @@ function extractLiteralTokens(query: string): string[] {
     return [...tokens];
 }
 
-// eg: query='useDebounceInput组件', symbol.name='useDebounceInput' => match; query='防抖组件', symbol.name='useDebounceInput' => match; query='input组件', symbol.name='useDebounceInput' => weak match
 function hasStrongLiteralMatch(query: string, symbol: CodeSymbol): boolean {
     const normalizedQuery = query.trim().toLowerCase();
     const name = symbol.name.toLowerCase();
@@ -422,36 +301,6 @@ function hasStrongLiteralMatch(query: string, symbol: CodeSymbol): boolean {
     return tokens.some(
         (token) =>
             name === token || name.includes(token) || basename.includes(token)
-    );
-}
-
-function isStrongEnoughRecommendation(
-    item: ReturnType<typeof rankSemanticHits>[number],
-    query: string,
-    queriedBy: 'semantic' | 'keyword',
-    requiredProps: string[],
-    requiredHooks: string[]
-): boolean {
-    const hasRequiredFieldMatch = hasAllRequiredFields(
-        item.symbol,
-        requiredProps,
-        requiredHooks
-    );
-    const hasLiteralMatch = hasStrongLiteralMatch(query, item.symbol);
-
-    if (queriedBy === QUERIED_BY.SEMANTIC) {
-        return (
-            (item.score >= MIN_RECOMMENDATION_SCORE.semantic &&
-                (item.reason.textMatch.score >= MIN_SEMANTIC_TEXT_MATCH_SCORE ||
-                    hasRequiredFieldMatch)) ||
-            (hasLiteralMatch && item.score >= MIN_LITERAL_MATCH_SCORE)
-        );
-    }
-
-    return (
-        item.score >= MIN_RECOMMENDATION_SCORE.keyword ||
-        (hasRequiredFieldMatch &&
-            item.score >= REQUIRED_FIELD_FALLBACK_MIN_SCORE)
     );
 }
 
@@ -493,14 +342,9 @@ type PriorityScoredEntry = {
     adjustedReason: string;
 };
 
-/**
- * 同目录 index 文件降权：当结果集中某目录已有 index 文件时，对该目录内其他子文件扭扣分，
- * 解决 index.js 因内容稀疏（仅有 re-export）导致 embedding 分低而被内部子文件抑制的问题。
- */
 function applyDirectoryIndexPenalty(
     entries: PriorityScoredEntry[]
 ): PriorityScoredEntry[] {
-    // 找出结果集中哪些目录已有 index 文件
     const dirsWithIndex = new Set<string>();
     for (const entry of entries) {
         const p = entry.item.symbol.path;
@@ -513,17 +357,13 @@ function applyDirectoryIndexPenalty(
     }
     if (dirsWithIndex.size === 0) return entries;
 
-    // 对同目录中的非入口文件手动扣分
     return entries.map((entry) => {
         const p = entry.item.symbol.path;
         if (isIndexFile(p)) return entry;
         const dir = p.includes('/') ? p.substring(0, p.lastIndexOf('/')) : '';
         if (!dirsWithIndex.has(dir)) return entry;
         const newScore = Number(
-            Math.max(
-                0,
-                entry.adjustedScore - SAME_DIR_INDEX_EXISTS_PENALTY
-            ).toFixed(3)
+            Math.max(0, entry.adjustedScore - SAME_DIR_INDEX_EXISTS_PENALTY).toFixed(3)
         );
         return {
             ...entry,
@@ -533,28 +373,9 @@ function applyDirectoryIndexPenalty(
     });
 }
 
-interface EvalTraceAccumulator {
-    semanticIds: Set<number>;
-    reusableIds: Set<number>;
-    combinedIds: Set<number>;
-    qualifiedIds: Set<number>;
-    returnedIds: Set<number>;
-}
-
-function accToEvalTrace(acc: EvalTraceAccumulator): EvalTrace {
-    return {
-        semanticIds: [...acc.semanticIds],
-        reusableIds: [...acc.reusableIds],
-        combinedIds: [...acc.combinedIds],
-        qualifiedIds: [...acc.qualifiedIds],
-        returnedIds: [...acc.returnedIds],
-    };
-}
-
 /**
  * RRF（Reciprocal Rank Fusion）融合两路检索结果。
  * 对每路结果的排名取倒数作为分，合并后按总分降序。
- * k 默认 60，为 RRF 标准参数，控制排名截断平滑度。
  */
 function fuseByRRF(
     semanticResults: Array<{ symbol: CodeSymbol; similarity: number }>,
@@ -587,79 +408,241 @@ function fuseByRRF(
         }));
 }
 
+// ─── Service ─────────────────────────────────────────────────────────────────
+
 export class RecommendationService {
     constructor(private readonly repository: SymbolRepository) {}
 
     /**
-     * 两路并发检索：BM25（全文检索）与语义向量检索通过各自 WHERE type=xxx 独立检索，
-     * 结果集在应用层用 RRF融合。
-     * 两路均空时降级关键词 ILIKE。
+     * 统一推荐管道：
+     *   1. extractQueryKeywords  → 纯净特征词
+     *   2. LLM rewrite           → 英文伪文档
+     *   3. embed                 → 384 维向量
+     *   4. BM25 + HNSW 并发      → 两路独立检索
+     *   5. RRF 融合              → 混合排序
+     *   6. rank + enrich         → 综合排序 + 详情补查
      */
-    private async gatherSearchResults(
-        query: string,
-        searchTypes: SymbolType[],
-        preferSemantic: boolean,
-        limit: number
-    ): Promise<{
-        queriedBy: 'semantic' | 'keyword';
-        searchResults: Array<{ symbol: CodeSymbol; similarity: number }>;
-        fallbackReason: 'semantic_error_fallback_keyword' | null;
-    }> {
+    async recommendComponent(
+        input: RecommendComponentInput
+    ): Promise<RecommendComponentResult> {
+        this.logStart(input);
+        const { requiredProps, requiredHooks, searchTypes, limit } =
+            this.preprocessInput(input);
+
+        // ── Step 1: 本地纯净特征词提取 ──────────────────────────────────────
+        const keywords = extractQueryKeywords(input.query);
+        console.error(
+            '[code-intelligence-mcp] recommendComponent.step1.keywords keywords=%s',
+            JSON.stringify(keywords)
+        );
+
+        // ── Step 2: LLM 熔炼为英文伪文档 ────────────────────────────────────
+        let englishProse: string;
+        try {
+            englishProse = await callLLMToRewrite(input.query, keywords);
+        } catch (err) {
+            console.error(
+                '[code-intelligence-mcp] recommendComponent.step2.llmRewriteError err=%s',
+                String(err)
+            );
+            // LLM 不可用时回退：用 keywords 拼接作为 prose
+            englishProse = `Looking for a ${searchTypes[0] ?? 'component'} related to: ${keywords.join(', ')}`;
+        }
+        console.error(
+            '[code-intelligence-mcp] recommendComponent.step2.englishProse prose=%s',
+            englishProse
+        );
+
+        // ── Step 3: Embedding ────────────────────────────────────────────────
         const maxLimit = Math.max(
             limit * STRUCTURE_LIMIT_MULTIPLIER,
             STRUCTURE_LIMIT_MIN
         );
 
-        // 两路并发：BM25（始终可用）+ 语义向量检索，各自用 WHERE type=ANY(...) 一次 SQL 完成
-        const [bm25Results, semanticResults] = await Promise.all([
-            this.repository
-                .searchBM25(query, { type: searchTypes, limit: maxLimit })
-                .catch(() => [] as Array<{ symbol: CodeSymbol; score: number }>),
-            preferSemantic
-                ? this.repository
-                      .searchSemanticHits(query, {
-                          type: searchTypes,
-                          limit: maxLimit,
-                      })
-                      .catch(
-                          () =>
-                              [] as Array<{
-                                  symbol: CodeSymbol;
-                                  similarity: number;
-                              }>
-                      )
-                : Promise.resolve(
-                      [] as Array<{ symbol: CodeSymbol; similarity: number }>
-                  ),
-        ]);
+        const [bm25Results, hnswResults] = await this.runConcurrentSearch(
+            keywords,
+            englishProse,
+            searchTypes,
+            maxLimit
+        );
 
-        // 两路均空 → 降级关键词 ILIKE
-        if (semanticResults.length === 0 && bm25Results.length === 0) {
-            const keywordGroups = await Promise.all(
-                searchTypes.map((type) => this.repository.search(query, type))
+        if (bm25Results.length === 0 && hnswResults.length === 0) {
+            console.error(
+                '[code-intelligence-mcp] recommendComponent.noResultsBothPaths'
             );
-            return {
-                queriedBy: QUERIED_BY.KEYWORD,
-                searchResults: keywordGroups
-                    .flat()
-                    .map((symbol) => ({ symbol, similarity: 0 })),
-                fallbackReason: preferSemantic
-                    ? FALLBACK_REASON.SEMANTIC_ERROR
-                    : null,
-            };
+            return this.buildResult({
+                recommended: null,
+                alternatives: [],
+                queriedBy: QUERIED_BY.SEMANTIC,
+                requiredProps,
+                requiredHooks,
+                attempts: [],
+                selectedQuery: null,
+                fallbackReason: null,
+            });
         }
 
-        // 至少一路有结果 → RRF 融合（单路时等同于直接返回该路排序）
-        const fused = fuseByRRF(semanticResults, bm25Results);
-        return {
+        // ── Step 5: RRF 融合 ────────────────────────────────────────────────
+        const fused = fuseByRRF(hnswResults, bm25Results);
+        console.error(
+            '[code-intelligence-mcp] recommendComponent.step5.rrfFused count=%s',
+            fused.length
+        );
+
+        // ── Step 6: rerank + 优先级调整 + Enrich ────────────────────────────
+        const candidates = await this.rankAndBuildCandidates(
+            fused,
+            englishProse,
+            requiredProps,
+            requiredHooks,
+            limit
+        );
+
+        if (candidates.length === 0) {
+            return this.buildResult({
+                recommended: null,
+                alternatives: [],
+                queriedBy: QUERIED_BY.SEMANTIC,
+                requiredProps,
+                requiredHooks,
+                attempts: [
+                    {
+                        query: englishProse,
+                        queriedBy: QUERIED_BY.SEMANTIC,
+                        searchCount: fused.length,
+                        structureCount: 0,
+                        combinedCount: fused.length,
+                        qualifiedCount: 0,
+                        detailEnrichedCount: 0,
+                    },
+                ],
+                selectedQuery: englishProse,
+                fallbackReason: null,
+            });
+        }
+
+        return this.buildResult({
+            recommended: candidates[0] ?? null,
+            alternatives: candidates.slice(1, limit),
             queriedBy: QUERIED_BY.SEMANTIC,
-            searchResults: fused,
+            requiredProps,
+            requiredHooks,
+            attempts: [
+                {
+                    query: englishProse,
+                    queriedBy: QUERIED_BY.SEMANTIC,
+                    searchCount: fused.length,
+                    structureCount: 0,
+                    combinedCount: fused.length,
+                    qualifiedCount: candidates.length,
+                    detailEnrichedCount: Math.min(ENRICH_TOP_K, candidates.length),
+                },
+            ],
+            selectedQuery: englishProse,
             fallbackReason: null,
-        };
+        });
     }
 
     /**
-     * 对排名靠前的候选项进行详情补查
+     * Step 3+4: Embed → 并发 BM25 + HNSW。
+     * 若 embedding 服务不可用，降级为纯 BM25。
+     */
+    private async runConcurrentSearch(
+        keywords: string[],
+        englishProse: string,
+        searchTypes: SymbolType[],
+        limit: number
+    ): Promise<[
+        Array<{ symbol: CodeSymbol; score: number }>,
+        Array<{ symbol: CodeSymbol; similarity: number }>,
+    ]> {
+        // BM25 路（始终可用）
+        const bm25Promise = this.repository
+            .searchBM25(keywords.join(' '), { type: searchTypes, limit })
+            .catch(() => [] as Array<{ symbol: CodeSymbol; score: number }>);
+
+        // HNSW 路（需 embedding 服务）
+        const hnswPromise = this.embedAndSearchHNSW(englishProse, searchTypes, limit);
+
+        return Promise.all([bm25Promise, hnswPromise]);
+    }
+
+    private async embedAndSearchHNSW(
+        englishProse: string,
+        searchTypes: SymbolType[],
+        limit: number
+    ): Promise<Array<{ symbol: CodeSymbol; similarity: number }>> {
+        try {
+            const client = createEmbeddingClient(env.embeddingServiceUrl);
+            const [queryVec] = await client.embed([englishProse]);
+            if (!queryVec?.length) return [];
+            return await this.repository.searchByVector(queryVec, {
+                type: searchTypes,
+                limit,
+            });
+        } catch (err) {
+            console.error(
+                '[code-intelligence-mcp] recommendComponent.embedOrHnswError err=%s',
+                String(err)
+            );
+            return [];
+        }
+    }
+
+    /**
+     * 综合排序 + 优先级调整 + Enrich（无质量门控）。
+     */
+    private async rankAndBuildCandidates(
+        fused: Array<{ symbol: CodeSymbol; similarity: number }>,
+        queryText: string,
+        requiredProps: string[],
+        requiredHooks: string[],
+        limit: number
+    ): Promise<RecommendedCandidate[]> {
+        // 1. rankSemanticHits 综合排序
+        const ranked = rankSemanticHits(fused, queryText);
+
+        // 2. 优先级预排序（字面命中加分 / demo 路径减分）
+        const priorityScored = ranked.map((item) => {
+            const adjusted = computeRecommendationPriority(item, queryText);
+            return {
+                item,
+                adjustedScore: adjusted.score,
+                adjustedReason: adjusted.reason,
+            };
+        });
+        priorityScored.sort((a, b) => b.adjustedScore - a.adjustedScore);
+
+        // 3. 同目录 index 文件降权
+        const reranked = applyDirectoryIndexPenalty(priorityScored);
+        reranked.sort((a, b) => b.adjustedScore - a.adjustedScore);
+
+        // 4. Enrich（补全 meta / callers / sideEffects）
+        const enriched = await this.enrichTopCandidatesWithDetail(
+            reranked.map((e) => e.item)
+        );
+
+        // 5. 回填 enrichment 结果到 reranked 排序
+        const enrichedScored = enriched.ranked.map((item, idx) => ({
+            item,
+            adjustedScore: reranked[idx]?.adjustedScore ?? item.score,
+            adjustedReason:
+                reranked[idx]?.adjustedReason ?? item.reason.summary,
+        }));
+
+        return enrichedScored.map((entry) =>
+            toCandidate(
+                entry.item.symbol,
+                entry.adjustedScore,
+                entry.adjustedReason,
+                requiredProps,
+                requiredHooks
+            )
+        );
+    }
+
+    /**
+     * 对排名靠前的候选项进行详情补查（callers / sideEffects 等）。
      */
     private async enrichTopCandidatesWithDetail(
         ranked: Array<ReturnType<typeof rankSemanticHits>[number]>
@@ -683,7 +666,7 @@ export class RecommendationService {
                         detailMap.set(symbol.id, detail);
                     }
                 } catch {
-                    // 详情补查失败时继续主流程，避免影响推荐输出。
+                    // 详情补查失败时继续主流程
                 }
             })
         );
@@ -703,418 +686,38 @@ export class RecommendationService {
         };
     }
 
-    /**
-     * Agent 主循环：根据输入生成 query 变体，依次尝试多轮检索，融合语义/结构/关键词，Top-K 详情补查，质量门控，优先级调整。
-     * 命中即返回推荐，否则遍历所有变体，最终输出 debug trace。
-     */
-    async recommendComponent(
-        input: RecommendComponentInput
-    ): Promise<RecommendComponentResult> {
-        this.logStart(input);
-        const {
-            requiredProps,
-            requiredHooks,
-            structureFields,
-            searchTypes,
-            preferSemantic,
-            limit,
-            queryVariants,
-        } = this.preprocessInput(input);
-        let queriedBy = preferSemantic
-            ? QUERIED_BY.SEMANTIC
-            : QUERIED_BY.KEYWORD;
-        let lastRankedCandidates: RecommendedCandidate[] = [];
-        let lastCombinedCount = 0;
-        let selectedQuery: string | null = null;
-        let fallbackReason: 'semantic_error_fallback_keyword' | null = null;
-        const attempts: RecommendationAttempt[] = [];
-        const evalAcc: EvalTraceAccumulator | undefined = input.evalMode
-            ? {
-                  semanticIds: new Set(),
-                  reusableIds: new Set(),
-                  combinedIds: new Set(),
-                  qualifiedIds: new Set(),
-                  returnedIds: new Set(),
-              }
-            : undefined;
+    // ─── Input 预处理 ────────────────────────────────────────────────────────
 
-        this.logSearchTypes(searchTypes);
-
-        for (const queryVariant of queryVariants) {
-            const { attempt, combined, searchResults, gathered } =
-                await this.tryQueryVariant({
-                    queryVariant,
-                    input,
-                    searchTypes,
-                    preferSemantic,
-                    limit,
-                    structureFields,
-                    requiredProps,
-                    requiredHooks,
-                    evalAcc,
-                });
-            queriedBy = gathered.queriedBy;
-            if (!fallbackReason && gathered.fallbackReason) {
-                fallbackReason = gathered.fallbackReason;
-            }
-            lastCombinedCount = combined.length;
-            this.logAttemptCheckpoint('attempt.summary', attempt);
-            if (combined.length === 0) {
-                attempt.skippedReason = SKIPPED_REASON.NO_COMBINED;
-                this.logAttemptCheckpoint(
-                    'attempt.skipped.no_combined',
-                    attempt
-                );
-                attempts.push(attempt);
-                continue;
-            }
-
-            const candidates = await this.rankAndEnrichCandidates({
-                combined,
-                searchResults,
-                queryVariant,
-                queriedBy,
-                requiredProps,
-                requiredHooks,
-                attempt,
-                limit,
-                evalAcc,
-            });
-            lastRankedCandidates = candidates;
-            if (candidates.length > 0) {
-                selectedQuery = queryVariant;
-                attempts.push(attempt);
-                this.logAttemptCheckpoint('attempt.success', attempt);
-                this.logAttemptsTrace('recommendComponent.result.found', {
-                    selectedQuery,
-                    queriedBy,
-                    attempts,
-                    fallbackReason,
-                });
-                return this.buildResult({
-                    recommended: candidates[0] ?? null,
-                    alternatives: candidates.slice(1, limit),
-                    queriedBy,
-                    requiredProps,
-                    requiredHooks,
-                    attempts,
-                    selectedQuery,
-                    fallbackReason,
-                    evalTrace: evalAcc ? accToEvalTrace(evalAcc) : undefined,
-                });
-            }
-            this.logAttemptCheckpoint(
-                'attempt.no_candidate_after_rank',
-                attempt
-            );
-            attempts.push(attempt);
-        }
-        this.logAttemptsTrace('recommendComponent.result.not_found', {
-            selectedQuery,
-            queriedBy,
-            attempts,
-            fallbackReason,
-        });
-        return this.buildResult({
-            recommended: null,
-            alternatives: [],
-            queriedBy,
-            requiredProps,
-            requiredHooks,
-            attempts,
-            selectedQuery,
-            fallbackReason,
-            evalTrace: evalAcc ? accToEvalTrace(evalAcc) : undefined,
-        });
+    private preprocessInput(input: RecommendComponentInput) {
+        const requiredProps = uniqueStrings(input.requiredProps);
+        const requiredHooks = uniqueStrings(input.requiredHooks);
+        const searchTypes = inferSearchTypes(input);
+        const limit = input.limit ?? 5;
+        const res = { requiredProps, requiredHooks, searchTypes, limit };
+        console.error(
+            '[code-intelligence-mcp] recommendComponent.preprocess searchTypes=%s requiredProps=%s requiredHooks=%s limit=%s',
+            JSON.stringify(searchTypes),
+            JSON.stringify(requiredProps),
+            JSON.stringify(requiredHooks),
+            String(limit)
+        );
+        return res;
     }
+
+    // ─── Logging ─────────────────────────────────────────────────────────────
 
     private logStart(input: RecommendComponentInput) {
         console.error(
-            '[code-intelligence-mcp] recommendComponent.start query=%s category=%s semantic=%s limit=%s requiredProps=%s requiredHooks=%s',
+            '[code-intelligence-mcp] recommendComponent.start query=%s category=%s limit=%s requiredProps=%s requiredHooks=%s',
             input.query,
             input.category ?? '',
-            String(input.semantic ?? true),
             String(input.limit ?? 5),
             JSON.stringify(input.requiredProps ?? []),
             JSON.stringify(input.requiredHooks ?? [])
         );
     }
 
-    private logSearchTypes(searchTypes: SymbolType[]) {
-        console.error(
-            '[code-intelligence-mcp] recommendComponent.searchTypes types=%s',
-            JSON.stringify(searchTypes)
-        );
-    }
-
-    private preprocessInput(input: RecommendComponentInput) {
-        const requiredProps = uniqueStrings(input.requiredProps);
-        const requiredHooks = uniqueStrings(input.requiredHooks);
-        const structureFields = uniqueStrings([
-            ...requiredProps,
-            ...requiredHooks,
-        ]);
-        const searchTypes = inferSearchTypes(input);
-        const preferSemantic = input.semantic ?? true;
-        const limit = input.limit ?? 5;
-        const queryVariants = buildQueryVariants(input.query).slice(
-            0,
-            MAX_QUERY_VARIANTS
-        );
-        const res = {
-            requiredProps,
-            requiredHooks,
-            structureFields,
-            searchTypes,
-            preferSemantic,
-            limit,
-            queryVariants,
-        };
-        console.error(
-            '[code-intelligence-mcp] recommendComponent.preprocess queryVariants=%s requiredProps=%s requiredHooks=%s structureFields=%s searchTypes=%s preferSemantic=%s limit=%s',
-            JSON.stringify(queryVariants),
-            JSON.stringify(requiredProps),
-            JSON.stringify(requiredHooks),
-            JSON.stringify(structureFields),
-            JSON.stringify(searchTypes),
-            String(preferSemantic),
-            String(limit)
-        );
-        return res;
-    }
-
-    private async tryQueryVariant({
-        queryVariant,
-        input,
-        searchTypes,
-        preferSemantic,
-        limit,
-        structureFields,
-        requiredProps,
-        requiredHooks,
-        evalAcc,
-    }: {
-        queryVariant: string;
-        input: RecommendComponentInput;
-        searchTypes: SymbolType[];
-        preferSemantic: boolean;
-        limit: number;
-        structureFields: string[];
-        requiredProps: string[];
-        requiredHooks: string[];
-        evalAcc?: EvalTraceAccumulator;
-    }) {
-        const gathered = await this.gatherSearchResults(
-            queryVariant,
-            searchTypes,
-            preferSemantic,
-            limit
-        );
-        const searchResults = gathered.searchResults;
-        if (evalAcc) {
-            searchResults.forEach((r) => evalAcc.semanticIds.add(r.symbol.id));
-        }
-        const attempt: RecommendationAttempt = {
-            query: queryVariant,
-            queriedBy: gathered.queriedBy,
-            searchCount: searchResults.length,
-            structureCount: 0,
-            combinedCount: 0,
-            qualifiedCount: 0,
-            detailEnrichedCount: 0,
-        };
-        const structureResults = structureFields.length
-            ? (
-                  await Promise.all(
-                      searchTypes.map((type) =>
-                          this.repository.searchByStructure(structureFields, {
-                              type,
-                              limit: Math.max(
-                                  limit * STRUCTURE_LIMIT_MULTIPLIER,
-                                  STRUCTURE_LIMIT_MIN
-                              ),
-                          })
-                      )
-                  )
-              ).flat()
-            : [];
-        attempt.structureCount = structureResults.length;
-        const mergedBeforeCategory = mergeCandidates([
-            ...structureResults,
-            ...searchResults.map((item) => item.symbol),
-        ]);
-        let combined = mergedBeforeCategory.filter((symbol) =>
-            input.category
-                ? (symbol.category ?? '')
-                      .toLowerCase()
-                      .includes(input.category.toLowerCase())
-                : true
-        );
-        if (
-            combined.length === 0 &&
-            input.category &&
-            mergedBeforeCategory.length
-        ) {
-            combined = mergedBeforeCategory;
-        }
-        const reusableCandidates = combined.filter(isReusableCandidate);
-        if (reusableCandidates.length > 0) {
-            combined = reusableCandidates;
-        }
-        if (evalAcc) {
-            reusableCandidates.forEach((s) => evalAcc.reusableIds.add(s.id));
-            combined.forEach((s) => evalAcc.combinedIds.add(s.id));
-        }
-        attempt.combinedCount = combined.length;
-        return { attempt, combined, searchResults, gathered };
-    }
-
-    private async rankAndEnrichCandidates({
-        combined,
-        searchResults,
-        queryVariant,
-        queriedBy,
-        requiredProps,
-        requiredHooks,
-        attempt,
-        limit,
-        evalAcc,
-    }: {
-        combined: CodeSymbol[];
-        searchResults: Array<{ symbol: CodeSymbol; similarity: number }>;
-        queryVariant: string;
-        queriedBy: 'semantic' | 'keyword';
-        requiredProps: string[];
-        requiredHooks: string[];
-        attempt: RecommendationAttempt;
-        limit: number;
-        evalAcc?: EvalTraceAccumulator;
-    }): Promise<RecommendedCandidate[]> {
-        const ranked =
-            queriedBy === QUERIED_BY.SEMANTIC
-                ? rankSemanticHits(
-                      combined.map((symbol) => ({
-                          symbol,
-                          similarity:
-                              searchResults.find(
-                                  (item) => item.symbol.id === symbol.id
-                              )?.similarity ?? 0.55,
-                      })),
-                      queryVariant
-                  )
-                : rankSymbols(queryVariant, combined);
-
-        // 优先级预排序：仅依赖 name/path，无需 meta，前置到详情补查之前。
-        // 目的：确保补查的 Top-K 是优先级调整后最可能命中的候选，
-        // 避免高语义分但字面命中弱的候选占据补查名额，遗漏字面强命中的候选。
-        const priorityScored = ranked.map((item) => {
-            const adjusted = computeRecommendationPriority(item, queryVariant);
-            return {
-                item,
-                adjustedScore: adjusted.score,
-                adjustedReason: adjusted.reason,
-            };
-        });
-        priorityScored.sort((a, b) => b.adjustedScore - a.adjustedScore);
-
-        // 同目录 index 文件降权：对同目录非入口子文件扭扣，确保 index.js > menu.js / panel.js
-        const reranked = applyDirectoryIndexPenalty(priorityScored);
-        reranked.sort((a, b) => b.adjustedScore - a.adjustedScore);
-
-        // 对优先级预排序后的 Top-K 做详情补查（getByName 补全完整 meta）
-        const enriched = await this.enrichTopCandidatesWithDetail(
-            reranked.map((e) => e.item)
-        );
-        attempt.detailEnrichedCount = enriched.enrichedCount;
-
-        // 将补查结果回填到 reranked，保持优先级排序
-        const enrichedPriorityScored = enriched.ranked.map((item, idx) => ({
-            item,
-            adjustedScore: reranked[idx]?.adjustedScore ?? item.score,
-            adjustedReason:
-                reranked[idx]?.adjustedReason ?? item.reason.summary,
-        }));
-
-        // 质量门控：score 阈值 + requiredProps/Hooks 命中校验（依赖完整 meta，必须在补查之后）
-        const qualifiedRanked = enrichedPriorityScored.filter((entry) =>
-            isStrongEnoughRecommendation(
-                entry.item,
-                queryVariant,
-                queriedBy,
-                requiredProps,
-                requiredHooks
-            )
-        );
-        attempt.qualifiedCount = qualifiedRanked.length;
-        if (qualifiedRanked.length === 0) {
-            attempt.skippedReason = SKIPPED_REASON.NO_QUALIFIED;
-        }
-        if (evalAcc) {
-            qualifiedRanked.forEach((e) =>
-                evalAcc.qualifiedIds.add(e.item.symbol.id)
-            );
-        }
-
-        // 已按优先级排序，直接构建候选结果
-        const candidates = qualifiedRanked.map((entry) =>
-            toCandidate(
-                entry.item.symbol,
-                entry.adjustedScore,
-                entry.adjustedReason,
-                requiredProps,
-                requiredHooks
-            )
-        );
-        if (evalAcc) {
-            candidates.forEach((c) => evalAcc.returnedIds.add(c.id));
-        }
-        console.error(
-            '[code-intelligence-mcp] recommendComponent.rank query=%s queriedBy=%s enriched=%s qualified=%s candidates=%s',
-            queryVariant,
-            queriedBy,
-            String(enrichedPriorityScored.length),
-            String(qualifiedRanked.length),
-            String(candidates.length)
-        );
-        return candidates;
-    }
-
-    private logAttemptCheckpoint(
-        stage: string,
-        attempt: RecommendationAttempt
-    ) {
-        console.error(
-            '[code-intelligence-mcp] recommendComponent.%s query=%s queriedBy=%s search=%s structure=%s combined=%s qualified=%s enriched=%s skipped=%s',
-            stage,
-            attempt.query,
-            attempt.queriedBy,
-            String(attempt.searchCount),
-            String(attempt.structureCount),
-            String(attempt.combinedCount),
-            String(attempt.qualifiedCount),
-            String(attempt.detailEnrichedCount),
-            attempt.skippedReason ?? 'none'
-        );
-    }
-
-    private logAttemptsTrace(
-        stage: string,
-        payload: {
-            selectedQuery: string | null;
-            queriedBy: 'semantic' | 'keyword';
-            attempts: RecommendationAttempt[];
-            fallbackReason: 'semantic_error_fallback_keyword' | null;
-        }
-    ) {
-        console.error(
-            '[code-intelligence-mcp] %s selectedQuery=%s queriedBy=%s attempts=%s fallbackReason=%s',
-            stage,
-            payload.selectedQuery ?? 'none',
-            payload.queriedBy,
-            JSON.stringify(payload.attempts),
-            payload.fallbackReason ?? 'none'
-        );
-    }
+    // ─── Result builder ──────────────────────────────────────────────────────
 
     private buildResult({
         recommended,
@@ -1152,7 +755,7 @@ export class RecommendationService {
             debug: {
                 attempts,
                 selectedQuery,
-                retryUsed: attempts.length > 1,
+                retryUsed: false,
                 fallbackReason,
             },
             evalTrace,

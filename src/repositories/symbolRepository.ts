@@ -5,6 +5,7 @@ import { SYMBOL_SIMILARITY_THRESHOLD, SYMBOL_TOP_K } from '../config/tuning.js';
 import type { CodeSymbol, SymbolType } from '../types/symbol.js';
 import { createEmbeddingClient } from '../services/embeddingClient.js';
 import { SEARCHABLE_STATUS } from '../config/symbolStatus.js';
+import { toEmbedDoc } from '../indexer/embedDoc.js';
 
 interface SymbolRow {
     id: number;
@@ -141,6 +142,25 @@ function countTokenMatches(text: string, tokens: string[]): number {
             text.includes(token.toLowerCase()) ? count + 1 : count,
         0
     );
+}
+
+/**
+ * 将用户 query 包装为与索引侧相同的伪文档格式，对齐 embedding 空间分布。
+ * 索引侧 content = toEmbedDoc({name, type, description, signature, sideEffects, hooks})
+ */
+function buildSearchQueryText(
+    query: string,
+    types: SymbolType | SymbolType[] | undefined
+): string {
+    const t = Array.isArray(types) ? types[0] : types;
+    return toEmbedDoc({
+        name: query,
+        type: t ?? ('component' as const),
+        description: query,
+        signature: '',
+        sideEffects: [],
+        hooks: [],
+    });
 }
 
 export class SymbolRepository {
@@ -291,6 +311,49 @@ export class SymbolRepository {
     }
 
     /**
+     * HNSW 向量检索：直接接收预计算的向量，跳过 embedding 步骤。
+     * 用于 LLM rewrite → 单次 embedding → 并发 HNSW 的管道模式。
+     */
+    async searchByVector(
+        vector: number[],
+        opts?: { type?: SymbolType | SymbolType[]; limit?: number }
+    ): Promise<Array<{ symbol: CodeSymbol; similarity: number }>> {
+        if (!this.pool) return [];
+        const limit = opts?.limit ?? SYMBOL_TOP_K;
+        const vecLiteral = `[${vector.join(',')}]`;
+        const params: unknown[] = [vecLiteral, SEARCHABLE_STATUS];
+
+        let sql = `
+            SELECT id, name, type, category, path, description, content, meta::text AS meta,
+                   usage_count, created_at,
+                   1 - (embedding <=> $1::vector) AS similarity
+            FROM ${env.symbolsTable}
+            WHERE embedding IS NOT NULL
+              AND status = $2::smallint
+        `;
+
+        if (opts?.type) {
+            const types = Array.isArray(opts.type) ? opts.type : [opts.type];
+            params.push(types);
+            sql += ` AND type = ANY($${params.length}::varchar[])`;
+        }
+
+        params.push(limit * 2);
+        sql += ` ORDER BY embedding <=> $1::vector LIMIT $${params.length}`;
+
+        const { rows } = await this.pool.query<
+            SymbolRow & { similarity: string }
+        >(sql, params);
+        return rows
+            .map((r) => ({
+                symbol: mapRow(r),
+                similarity: Number(r.similarity),
+            }))
+            .filter((x) => x.similarity >= SYMBOL_SIMILARITY_THRESHOLD)
+            .slice(0, limit);
+    }
+
+    /**
      * 语义向量检索：将 query 嵌入后用 pgvector <=> 运算符（cosine distance）在数据库内完成相似度排序。
      * 不再需要在 Node 拉取全量向量做内存计算。
      */
@@ -326,7 +389,12 @@ export class SymbolRepository {
 
         const limit = opts?.limit ?? SYMBOL_TOP_K;
         const client = createEmbeddingClient(env.embeddingServiceUrl);
-        const [queryVec] = await client.embed([query.trim()]);
+        const searchText = buildSearchQueryText(query, opts?.type);
+        console.error(
+            `[code-intelligence-mcp] repository.searchSemanticHits.rewriteQueryDoc = %s`,
+            searchText
+        );
+        const [queryVec] = await client.embed([searchText]);
         if (!queryVec?.length) {
             throw new Error('查询向量为空');
         }
@@ -366,7 +434,7 @@ export class SymbolRepository {
         );
 
         console.error(
-            '[code-intelligence-mcp] repository.searchSemanticHits.db table=%s rawRows=%s passedThreshold=%s topRaw=%s',
+            '[code-intelligence-mcp] repository.searchSemanticHits.dbOutput table=%s rawRows=%s passedThreshold=%s topRaw=%s',
             env.symbolsTable,
             String(rows.length),
             String(passed.length),

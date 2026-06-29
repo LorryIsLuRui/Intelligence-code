@@ -10,6 +10,7 @@ import { createHash } from 'node:crypto';
 import { Node, ParameterDeclaration, SyntaxKind } from 'ts-morph';
 import type { CodeSymbol } from '../types/symbol.js';
 import { makeParamPlaceholder } from './paramPlaceholder.js';
+import { toEmbedDoc } from './embedDoc.js';
 
 // ─────────────────────────────────────────────
 // 内置类型白名单：不替换为 $T
@@ -390,7 +391,7 @@ export function extractNormalizedSignature(node: Node): string {
 }
 
 // ─────────────────────────────────────────────
-// computeSemanticHash
+// 输出[语义指纹hash，英文伪代码描述]
 // 纳入：标准化签名 + name + type + description + sideEffects + hooks
 // 排除：参数名、实现、格式、callers/callees
 // ─────────────────────────────────────────────
@@ -411,8 +412,9 @@ export function computeSemanticHash(
         ].sort(),
         hooks: [...((meta.hooks as string[] | undefined) ?? [])].sort(),
     };
-    const stableStr = JSON.stringify(stable);
-    return [createHash('sha256').update(stableStr).digest('hex'), stableStr];
+    const hashInput = JSON.stringify(stable);
+    const embedDoc = toEmbedDoc(stable);
+    return [createHash('sha256').update(hashInput).digest('hex'), embedDoc];
 }
 
 // ─────────────────────────────────────────────

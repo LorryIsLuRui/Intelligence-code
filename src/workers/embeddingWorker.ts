@@ -28,6 +28,7 @@ import { env } from '../config/env.js';
 import { getPool } from '../db/postgres.js';
 import { createEmbeddingClient } from '../services/embeddingClient.js';
 import { indexedRowToEmbedText } from '../indexer/embedText.js';
+import { codeToLLMProse } from '../services/queryRewriter.js';
 import {
     initCategoryEmbeddings,
     resolveCategory,
@@ -119,8 +120,23 @@ async function processEmbedJob(
     console.error(
         `[worker] 🔄 embedding  [${ts()}]  table=${table}  hash=${shortHash}…  ${row.path}:${row.name}`
     );
-    const doc = row.content ?? indexedRowToEmbedText(rowObj);
-    const vectors = await embedClient.embed([doc]);
+
+    // Step 1a: 用 LLM 生成自然语言 prose（与检索侧同一分布），持久化到 content
+    let doc: string | null = null;
+    try {
+        const prose = await codeToLLMProse(rowObj, semanticHash);
+        if (prose) {
+            doc = prose;
+            await pool.query(
+                `UPDATE ${table} SET content = $1 WHERE semantic_hash = $2`,
+                [String(prose), semanticHash]
+            );
+        }
+    } catch {
+        // LLM 不可用时静默回退
+    }
+    const embedText = doc ?? row.content ?? indexedRowToEmbedText(rowObj);
+    const vectors = await embedClient.embed([embedText]);
     vector = vectors[0];
 
     // 生成 category（规则 → embedding → LLM 三层融合）

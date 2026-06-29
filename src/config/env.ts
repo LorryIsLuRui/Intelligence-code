@@ -83,6 +83,14 @@ export const env = {
     get redisUrl() {
         return process.env.REDIS_URL ?? 'redis://127.0.0.1:6379';
     },
+    /** Ollama API 基础 URL（用于 query rewrite 等 LLM 调用） */
+    get ollamaBaseUrl() {
+        return (process.env.OLLAMA_BASE_URL ?? 'http://127.0.0.1:11434').replace(/\/+$/, '');
+    },
+    /** Ollama 模型名称（query rewrite 用，建议 8B+ 参数模型） */
+    get ollamaModel() {
+        return process.env.OLLAMA_MODEL ?? 'llama3.2:3b';
+    },
 };
 
 export function validateEnv(): void {
