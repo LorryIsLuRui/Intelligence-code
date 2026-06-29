@@ -248,12 +248,55 @@ export class SymbolRepository {
     }
 
     /**
+     * BM25 全文检索（与语义检索并发执行）：使用 PostgreSQL tsvector + ts_rank 实现。
+     * 数据库内完成的 BM25 评分，作为稀疏检索路与语义向量检索互补。
+     */
+    async searchBM25(
+        query: string,
+        opts?: { type?: SymbolType | SymbolType[]; limit?: number }
+    ): Promise<Array<{ symbol: CodeSymbol; score: number }>> {
+        if (!this.pool) return [];
+        const limit = opts?.limit ?? 20;
+        const tsquery = `plainto_tsquery('simple', $1)`;
+
+        const params: unknown[] = [query, SEARCHABLE_STATUS];
+        let sql = `
+            SELECT id, name, type, category, path, description, content, meta::text AS meta,
+                   usage_count, created_at,
+                   ts_rank(search_vector, ${tsquery}, 32) AS bm25_score
+            FROM ${env.symbolsTable}
+            WHERE search_vector @@ ${tsquery}
+              AND status = $2::smallint
+        `;
+
+        if (opts?.type) {
+            const types = Array.isArray(opts.type) ? opts.type : [opts.type];
+            params.push(types);
+            sql += ` AND type = ANY($${params.length}::varchar[])`;
+        }
+
+        params.push(limit);
+        sql += ` ORDER BY bm25_score DESC LIMIT $${params.length}`;
+
+        const { rows } = await this.pool.query<
+            SymbolRow & { bm25_score: string }
+        >(sql, params);
+        return rows
+            .filter((r) => Number(r.bm25_score) > 0)
+            .map((r) => ({
+                symbol: mapRow(r),
+                score: Number(r.bm25_score),
+            }))
+            .slice(0, limit);
+    }
+
+    /**
      * 语义向量检索：将 query 嵌入后用 pgvector <=> 运算符（cosine distance）在数据库内完成相似度排序。
      * 不再需要在 Node 拉取全量向量做内存计算。
      */
     async searchSemanticHits(
         query: string,
-        opts?: { type?: SymbolType; limit?: number }
+        opts?: { type?: SymbolType | SymbolType[]; limit?: number }
     ): Promise<Array<{ symbol: CodeSymbol; similarity: number }>> {
         console.error(
             '[code-intelligence-mcp] repository.searchSemanticHits.start query=%s type=%s table=%s limit=%s threshold=%s searchableStatus=%s hasPool=%s',
@@ -303,8 +346,9 @@ export class SymbolRepository {
     `;
 
         if (opts?.type) {
-            params.push(opts.type);
-            sql += ` AND type = $${params.length}`;
+            const types = Array.isArray(opts.type) ? opts.type : [opts.type];
+            params.push(types);
+            sql += ` AND type = ANY($${params.length}::varchar[])`;
         }
 
         params.push(limit * 2); // 多取一倍以便 SIMILARITY_THRESHOLD 过滤后仍有足量结果

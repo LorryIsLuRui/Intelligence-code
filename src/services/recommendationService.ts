@@ -551,16 +551,49 @@ function accToEvalTrace(acc: EvalTraceAccumulator): EvalTrace {
     };
 }
 
+/**
+ * RRF（Reciprocal Rank Fusion）融合两路检索结果。
+ * 对每路结果的排名取倒数作为分，合并后按总分降序。
+ * k 默认 60，为 RRF 标准参数，控制排名截断平滑度。
+ */
+function fuseByRRF(
+    semanticResults: Array<{ symbol: CodeSymbol; similarity: number }>,
+    bm25Results: Array<{ symbol: CodeSymbol; score: number }>,
+    k = 60
+): Array<{ symbol: CodeSymbol; similarity: number }> {
+    const rrfScores = new Map<number, number>();
+    const symbolMap = new Map<number, CodeSymbol>();
+
+    for (const [rank, item] of semanticResults.entries()) {
+        rrfScores.set(
+            item.symbol.id,
+            (rrfScores.get(item.symbol.id) ?? 0) + 1 / (k + rank)
+        );
+        symbolMap.set(item.symbol.id, item.symbol);
+    }
+    for (const [rank, item] of bm25Results.entries()) {
+        rrfScores.set(
+            item.symbol.id,
+            (rrfScores.get(item.symbol.id) ?? 0) + 1 / (k + rank)
+        );
+        symbolMap.set(item.symbol.id, item.symbol);
+    }
+
+    return [...rrfScores.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .map(([id, score]) => ({
+            symbol: symbolMap.get(id)!,
+            similarity: score,
+        }));
+}
+
 export class RecommendationService {
     constructor(private readonly repository: SymbolRepository) {}
 
     /**
-     * 根据查询和提示信息从仓库中获取候选结果，优先语义搜索并在出错时回退关键词搜索，返回搜索结果和相关的调试信息供后续处理使用。
-     * @param query 查询字符串
-     * @param searchTypes 搜索的符号类型
-     * @param preferSemantic 是否优先使用语义搜索
-     * @param limit 返回结果的数量限制
-     * @returns 包含搜索结果和调试信息的对象
+     * 两路并发检索：BM25（全文检索）与语义向量检索通过各自 WHERE type=xxx 独立检索，
+     * 结果集在应用层用 RRF融合。
+     * 两路均空时降级关键词 ILIKE。
      */
     private async gatherSearchResults(
         query: string,
@@ -572,45 +605,56 @@ export class RecommendationService {
         searchResults: Array<{ symbol: CodeSymbol; similarity: number }>;
         fallbackReason: 'semantic_error_fallback_keyword' | null;
     }> {
-        let queriedBy = preferSemantic
-            ? QUERIED_BY.SEMANTIC
-            : QUERIED_BY.KEYWORD;
-        let fallbackReason: 'semantic_error_fallback_keyword' | null = null;
+        const maxLimit = Math.max(
+            limit * STRUCTURE_LIMIT_MULTIPLIER,
+            STRUCTURE_LIMIT_MIN
+        );
 
-        if (preferSemantic) {
-            try {
-                const semanticGroups = await Promise.all(
-                    searchTypes.map((type) =>
-                        this.repository.searchSemanticHits(query, {
-                            type,
-                            limit: Math.max(
-                                limit * STRUCTURE_LIMIT_MULTIPLIER,
-                                STRUCTURE_LIMIT_MIN
-                            ),
-                        })
-                    )
-                );
-                const searchResults = semanticGroups.flat();
-                return {
-                    queriedBy,
-                    searchResults,
-                    fallbackReason,
-                };
-            } catch {
-                queriedBy = QUERIED_BY.KEYWORD;
-                fallbackReason = FALLBACK_REASON.SEMANTIC_ERROR;
-            }
+        // 两路并发：BM25（始终可用）+ 语义向量检索，各自用 WHERE type=ANY(...) 一次 SQL 完成
+        const [bm25Results, semanticResults] = await Promise.all([
+            this.repository
+                .searchBM25(query, { type: searchTypes, limit: maxLimit })
+                .catch(() => [] as Array<{ symbol: CodeSymbol; score: number }>),
+            preferSemantic
+                ? this.repository
+                      .searchSemanticHits(query, {
+                          type: searchTypes,
+                          limit: maxLimit,
+                      })
+                      .catch(
+                          () =>
+                              [] as Array<{
+                                  symbol: CodeSymbol;
+                                  similarity: number;
+                              }>
+                      )
+                : Promise.resolve(
+                      [] as Array<{ symbol: CodeSymbol; similarity: number }>
+                  ),
+        ]);
+
+        // 两路均空 → 降级关键词 ILIKE
+        if (semanticResults.length === 0 && bm25Results.length === 0) {
+            const keywordGroups = await Promise.all(
+                searchTypes.map((type) => this.repository.search(query, type))
+            );
+            return {
+                queriedBy: QUERIED_BY.KEYWORD,
+                searchResults: keywordGroups
+                    .flat()
+                    .map((symbol) => ({ symbol, similarity: 0 })),
+                fallbackReason: preferSemantic
+                    ? FALLBACK_REASON.SEMANTIC_ERROR
+                    : null,
+            };
         }
 
-        const keywordGroups = await Promise.all(
-            searchTypes.map((type) => this.repository.search(query, type))
-        );
+        // 至少一路有结果 → RRF 融合（单路时等同于直接返回该路排序）
+        const fused = fuseByRRF(semanticResults, bm25Results);
         return {
-            queriedBy,
-            searchResults: keywordGroups
-                .flat()
-                .map((symbol) => ({ symbol, similarity: 0 })),
-            fallbackReason,
+            queriedBy: QUERIED_BY.SEMANTIC,
+            searchResults: fused,
+            fallbackReason: null,
         };
     }
 
